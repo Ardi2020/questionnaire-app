@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { fullSurveySchema } from "@/lib/schemas";
-import { supabase } from "@/lib/supabase";
+import { getSupabase } from "@/lib/supabase";
 import { v4 as uuidv4 } from "uuid";
+
+export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
@@ -19,6 +21,7 @@ export async function POST(request: Request) {
     const data = result.data;
 
     // Insert into Supabase
+    const supabase = getSupabase();
     const { error } = await supabase.from("responses").insert({
       id: uuidv4(),
       submitted_at: new Date().toISOString(),
