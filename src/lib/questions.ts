@@ -99,19 +99,19 @@ export const SECTIONS: Section[] = [
     items: [
       {
         code: "TI1",
-        text: "Konektivitas jaringan internet dan intranet di rumah sakit saya stabil dan dapat diandalkan.",
+        text: "Jaringan komputer di rumah sakit saya berfungsi dengan stabil.",
       },
       {
         code: "TI2",
-        text: "Kapasitas komputer/perangkat keras yang tersedia memadai untuk menjalankan aplikasi analisis data.",
+        text: "Perangkat komputer yang tersedia memadai untuk menjalankan aplikasi analisis data.",
       },
       {
         code: "TI3",
-        text: "Sistem data klinis (seperti EMR/SIMRS) terintegrasi dengan baik antar-unit (tidak terpisah-pisah).",
+        text: "Sistem data klinis (seperti EMR/SIMRS) terintegrasi dengan baik antar-unit.",
       },
       {
         code: "TI4",
-        text: "Infrastruktur keamanan data (privasi/sekuriti) sudah memadai untuk melindungi data pasien.",
+        text: "Sistem keamanan data di rumah sakit saya memadai untuk melindungi data pasien.",
       },
     ],
   },
@@ -123,15 +123,15 @@ export const SECTIONS: Section[] = [
     items: [
       {
         code: "OS1",
-        text: "Manajemen puncak (Direksi/Pimpinan) memberikan komitmen nyata terhadap penggunaan data.",
+        text: "Pimpinan rumah sakit memberikan komitmen nyata terhadap pemanfaatan data.",
       },
       {
         code: "OS2",
-        text: "Tersedia pelatihan berkala mengenai penggunaan teknologi/analitik data bagi staf.",
+        text: "Tersedia pelatihan berkala mengenai pemanfaatan data dan teknologi informasi bagi staf.",
       },
       {
         code: "OS3",
-        text: "Terdapat kebijakan atau insentif yang mendorong staf untuk menggunakan data dalam bekerja.",
+        text: "Terdapat kebijakan formal yang mendorong staf untuk memanfaatkan data dalam bekerja.",
       },
       {
         code: "OS4",
@@ -147,15 +147,15 @@ export const SECTIONS: Section[] = [
     items: [
       {
         code: "DC1",
-        text: "Data yang tersedia di sistem kami akurat dan dapat dipercaya (veracity).",
+        text: "Data yang tersedia di sistem rumah sakit saya akurat.",
       },
       {
         code: "DC2",
-        text: "Saya dapat mengakses data yang saya butuhkan dengan mudah dan cepat (accessibility).",
+        text: "Saya dapat mengakses data yang saya butuhkan dengan mudah.",
       },
       {
         code: "DC3",
-        text: "Format data sudah terstandarisasi sehingga mudah diolah (standardization).",
+        text: "Format data sudah terstandarisasi sehingga mudah diolah.",
       },
       {
         code: "DC4",
@@ -171,19 +171,19 @@ export const SECTIONS: Section[] = [
     items: [
       {
         code: "PEOU1",
-        text: "Saya merasa sistem BDA-AI di rumah sakit ini mudah dipelajari (easy to learn).",
+        text: "Saya merasa sistem BDA-AI di rumah sakit ini mudah dipelajari.",
       },
       {
         code: "PEOU2",
-        text: "Interaksi saya dengan sistem jelas dan mudah dimengerti (clear & understandable).",
+        text: "Cara mengoperasikan sistem ini mudah saya mengerti.",
       },
       {
         code: "PEOU3",
-        text: "Saya tidak membutuhkan usaha mental yang besar untuk mengoperasikan sistem ini.",
+        text: "Mengoperasikan sistem ini tidak memerlukan usaha mental yang besar.",
       },
       {
         code: "PEOU4",
-        text: "Secara keseluruhan, sistem ini mudah digunakan (user friendly).",
+        text: "Secara keseluruhan, sistem ini mudah digunakan.",
       },
     ],
   },
@@ -195,15 +195,15 @@ export const SECTIONS: Section[] = [
     items: [
       {
         code: "PU1",
-        text: "Menggunakan sistem ini meningkatkan kinerja pekerjaan saya (job performance).",
+        text: "Menggunakan sistem ini meningkatkan kinerja pekerjaan saya.",
       },
       {
         code: "PU2",
-        text: "Menggunakan sistem ini meningkatkan produktivitas saya (pekerjaan lebih cepat selesai).",
+        text: "Menggunakan sistem ini meningkatkan produktivitas saya.",
       },
       {
         code: "PU3",
-        text: "Sistem ini meningkatkan efektivitas saya dalam mengambil keputusan klinis/manajerial.",
+        text: "Sistem ini membantu saya mengambil keputusan kerja dengan lebih efektif.",
       },
       {
         code: "PU4",
@@ -239,19 +239,19 @@ export const SECTIONS: Section[] = [
     items: [
       {
         code: "READ1",
-        text: "Rumah sakit kami memiliki SOP/Prosedur yang jelas untuk integrasi analitik data.",
+        text: "Rumah sakit kami memiliki prosedur kerja (SOP) yang jelas untuk pemanfaatan analitik data.",
       },
       {
         code: "READ2",
-        text: "Rumah sakit kami memiliki Tim/Komite khusus yang menangani data dan AI.",
+        text: "Rumah sakit kami memiliki tim khusus yang bertanggung jawab atas pengelolaan data.",
       },
       {
         code: "READ3",
-        text: "Rumah sakit kami mengalokasikan Anggaran khusus untuk pengembangan teknologi data.",
+        text: "Rumah sakit kami mengalokasikan anggaran khusus untuk pengembangan teknologi data.",
       },
       {
         code: "READ4",
-        text: "Budaya kerja di unit kami sangat terbuka terhadap Inovasi digital.",
+        text: "Budaya kerja di unit kami terbuka terhadap inovasi digital.",
       },
       {
         code: "READ_G1",
