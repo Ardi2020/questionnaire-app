@@ -1,6 +1,9 @@
 export interface DemographicsData {
   jenisRS: string;
   kelasRS: string;
+  provinsiDetail: string;
+  namaRS: string;
+  hospitalId?: number;
   wilayah: string;
   profesi: string;
   pengalaman: string;

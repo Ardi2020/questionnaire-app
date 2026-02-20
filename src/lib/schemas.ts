@@ -11,6 +11,9 @@ const likertValue = z.coerce
 export const demographicsSchema = z.object({
   jenisRS: requiredField,
   kelasRS: requiredField,
+  provinsiDetail: requiredField,
+  namaRS: z.string().optional().default(""),
+  hospitalId: z.coerce.number().optional(),
   wilayah: requiredField,
   profesi: requiredField,
   pengalaman: requiredField,

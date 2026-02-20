@@ -63,6 +63,19 @@ export const DEMOGRAPHICS: Record<string, DemographicOption> = {
     label: "Kelas Rumah Sakit",
     options: ["Kelas A", "Kelas B", "Kelas C"],
   },
+  provinsiDetail: {
+    label: "Provinsi Lokasi Rumah Sakit",
+    options: [
+      "Sumatera Barat",
+      "DKI Jakarta",
+      "Jawa Barat",
+      "Jawa Tengah",
+      "DI Yogyakarta",
+      "Jawa Timur",
+      "Banten",
+      "Lainnya",
+    ],
+  },
   wilayah: {
     label: "Wilayah / Pulau",
     options: [

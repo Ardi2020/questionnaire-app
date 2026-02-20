@@ -1,0 +1,1680 @@
+From 5a54d30191bf64e751065665d7930b968803e8f7 Mon Sep 17 00:00:00 2001
+From: Asmuliardi Muluk <asmuliardi@gmail.com>
+Date: Fri, 20 Feb 2026 13:58:40 +0000
+Subject: [PATCH] feat: add RS identification dropdown + monitoring dashboard
+
+Changes:
+- Add hospital selector (cascading dropdown) to demographics step
+- Add provinsiDetail, namaRS, hospitalId to survey schema
+- 100 selected hospitals data in hospitals.ts
+- Dashboard page (/dashboard) with auth:
+  - Strata quota tracking with progress bars
+  - Per-RS status table (sortable, filterable)
+  - Per-province stats
+  - Profesi distribution
+  - Auto-refresh every 30s
+  - CSV export endpoint
+- Login page with password auth via middleware
+- Supabase migration v2: hospitals table, quota_targets, new response columns
+- Updated step-review to show new fields
+---
+ src/app/api/dashboard/export/route.ts       |  92 +++++
+ src/app/api/dashboard/login/route.ts        |  29 ++
+ src/app/api/dashboard/logout/route.ts       |   7 +
+ src/app/api/dashboard/route.ts              | 182 ++++++++++
+ src/app/api/submit/route.ts                 |   3 +
+ src/app/dashboard/layout.tsx                |   7 +
+ src/app/dashboard/login/page.tsx            |  85 +++++
+ src/app/dashboard/page.tsx                  | 381 ++++++++++++++++++++
+ src/components/survey/hospital-selector.tsx | 194 ++++++++++
+ src/components/survey/step-demographics.tsx | 108 +++++-
+ src/components/survey/step-review.tsx       |  16 +-
+ src/components/survey/survey-wizard.tsx     |   2 +-
+ src/lib/hospitals.ts                        | 147 ++++++++
+ src/lib/questions.ts                        |  13 +
+ src/lib/schemas.ts                          |   3 +
+ src/lib/types.ts                            |   3 +
+ src/middleware.ts                           |  21 ++
+ supabase-migration-v2.sql                   | 146 ++++++++
+ 18 files changed, 1431 insertions(+), 8 deletions(-)
+ create mode 100644 src/app/api/dashboard/export/route.ts
+ create mode 100644 src/app/api/dashboard/login/route.ts
+ create mode 100644 src/app/api/dashboard/logout/route.ts
+ create mode 100644 src/app/api/dashboard/route.ts
+ create mode 100644 src/app/dashboard/layout.tsx
+ create mode 100644 src/app/dashboard/login/page.tsx
+ create mode 100644 src/app/dashboard/page.tsx
+ create mode 100644 src/components/survey/hospital-selector.tsx
+ create mode 100644 src/lib/hospitals.ts
+ create mode 100644 src/middleware.ts
+ create mode 100644 supabase-migration-v2.sql
+
+diff --git a/src/app/api/dashboard/export/route.ts b/src/app/api/dashboard/export/route.ts
+new file mode 100644
+index 0000000..508702b
+--- /dev/null
++++ b/src/app/api/dashboard/export/route.ts
+@@ -0,0 +1,92 @@
++import { NextRequest, NextResponse } from "next/server";
++import { getSupabase } from "@/lib/supabase";
++
++export const dynamic = "force-dynamic";
++
++function checkAuth(request: NextRequest): boolean {
++  const cookie = request.cookies.get("dashboard_auth");
++  return cookie?.value === process.env.DASHBOARD_PASSWORD;
++}
++
++export async function GET(request: NextRequest) {
++  if (!checkAuth(request)) {
++    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
++  }
++
++  try {
++    const supabase = getSupabase();
++
++    const { data: responses, error } = await supabase
++      .from("responses")
++      .select("*")
++      .order("submitted_at", { ascending: true });
++
++    if (error) {
++      console.error("Export error:", error);
++      return NextResponse.json(
++        { error: "Failed to fetch data" },
++        { status: 500 }
++      );
++    }
++
++    if (!responses || responses.length === 0) {
++      return new NextResponse("Belum ada data responden.", {
++        status: 200,
++        headers: { "Content-Type": "text/plain" },
++      });
++    }
++
++    // Build CSV
++    const columns = [
++      "id",
++      "submitted_at",
++      "jenis_rs",
++      "kelas_rs",
++      "provinsi",
++      "nama_rs",
++      "hospital_id",
++      "wilayah",
++      "profesi",
++      "pengalaman",
++      "ti1", "ti2", "ti3", "ti4",
++      "os1", "os2", "os3", "os4",
++      "dc1", "dc2", "dc3", "dc4",
++      "peou1", "peou2", "peou3", "peou4",
++      "pu1", "pu2", "pu3", "pu4",
++      "bi1", "bi2", "bi3",
++      "read1", "read2", "read3", "read4", "read_g1",
++    ];
++
++    const header = columns.join(",");
++    const rows = responses.map((r) =>
++      columns
++        .map((col) => {
++          const val = r[col];
++          if (val === null || val === undefined) return "";
++          const str = String(val);
++          // Escape CSV values containing commas or quotes
++          if (str.includes(",") || str.includes('"') || str.includes("\n")) {
++            return `"${str.replace(/"/g, '""')}"`;
++          }
++          return str;
++        })
++        .join(",")
++    );
++
++    const csv = [header, ...rows].join("\n");
++
++    return new NextResponse(csv, {
++      status: 200,
++      headers: {
++        "Content-Type": "text/csv; charset=utf-8",
++        "Content-Disposition": `attachment; filename="responses_${new Date().toISOString().slice(0, 10)}.csv"`,
++      },
++    });
++  } catch (err) {
++    console.error("Export error:", err);
++    return NextResponse.json(
++      { error: "Internal server error" },
++      { status: 500 }
++    );
++  }
++}
+diff --git a/src/app/api/dashboard/login/route.ts b/src/app/api/dashboard/login/route.ts
+new file mode 100644
+index 0000000..56df7e4
+--- /dev/null
++++ b/src/app/api/dashboard/login/route.ts
+@@ -0,0 +1,29 @@
++import { NextRequest, NextResponse } from "next/server";
++
++export async function POST(request: NextRequest) {
++  try {
++    const { password } = await request.json();
++
++    if (password === process.env.DASHBOARD_PASSWORD) {
++      const response = NextResponse.json({ success: true });
++      response.cookies.set("dashboard_auth", password, {
++        httpOnly: true,
++        secure: process.env.NODE_ENV === "production",
++        sameSite: "lax",
++        maxAge: 60 * 60 * 24, // 24 hours
++        path: "/",
++      });
++      return response;
++    }
++
++    return NextResponse.json(
++      { error: "Password salah" },
++      { status: 401 }
++    );
++  } catch {
++    return NextResponse.json(
++      { error: "Terjadi kesalahan" },
++      { status: 500 }
++    );
++  }
++}
+diff --git a/src/app/api/dashboard/logout/route.ts b/src/app/api/dashboard/logout/route.ts
+new file mode 100644
+index 0000000..ce95954
+--- /dev/null
++++ b/src/app/api/dashboard/logout/route.ts
+@@ -0,0 +1,7 @@
++import { NextResponse } from "next/server";
++
++export async function POST() {
++  const response = NextResponse.json({ success: true });
++  response.cookies.delete("dashboard_auth");
++  return response;
++}
+diff --git a/src/app/api/dashboard/route.ts b/src/app/api/dashboard/route.ts
+new file mode 100644
+index 0000000..08d3874
+--- /dev/null
++++ b/src/app/api/dashboard/route.ts
+@@ -0,0 +1,182 @@
++import { NextRequest, NextResponse } from "next/server";
++import { getSupabase } from "@/lib/supabase";
++import { HOSPITALS } from "@/lib/hospitals";
++
++export const dynamic = "force-dynamic";
++
++function checkAuth(request: NextRequest): boolean {
++  const cookie = request.cookies.get("dashboard_auth");
++  return cookie?.value === process.env.DASHBOARD_PASSWORD;
++}
++
++export async function GET(request: NextRequest) {
++  if (!checkAuth(request)) {
++    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
++  }
++
++  try {
++    const supabase = getSupabase();
++
++    // Fetch all responses
++    const { data: responses, error } = await supabase
++      .from("responses")
++      .select(
++        "id, submitted_at, jenis_rs, kelas_rs, provinsi, hospital_id, nama_rs, profesi, wilayah"
++      )
++      .order("submitted_at", { ascending: false });
++
++    if (error) {
++      console.error("Dashboard query error:", error);
++      return NextResponse.json(
++        { error: "Failed to fetch data" },
++        { status: 500 }
++      );
++    }
++
++    const allResponses = responses || [];
++    const total = allResponses.length;
++    const lastSubmission =
++      total > 0 ? allResponses[0].submitted_at : null;
++
++    // Strata quota
++    const strataTargets = [
++      { strata: "Publik_A", label: "RS Publik Kelas A", target: 30 },
++      { strata: "Publik_B", label: "RS Publik Kelas B", target: 75 },
++      { strata: "Publik_C", label: "RS Publik Kelas C", target: 75 },
++      { strata: "Swasta_AB", label: "RS Swasta Kelas A & B", target: 45 },
++      { strata: "Swasta_C", label: "RS Swasta Kelas C", target: 75 },
++    ];
++
++    function getStrata(jenisRS: string, kelasRS: string): string {
++      const isPub = jenisRS?.includes("Publik") || jenisRS?.includes("Pemerintah");
++      if (isPub && kelasRS === "Kelas A") return "Publik_A";
++      if (isPub && kelasRS === "Kelas B") return "Publik_B";
++      if (isPub && kelasRS === "Kelas C") return "Publik_C";
++      if (!isPub && (kelasRS === "Kelas A" || kelasRS === "Kelas B"))
++        return "Swasta_AB";
++      if (!isPub && kelasRS === "Kelas C") return "Swasta_C";
++      return "Unknown";
++    }
++
++    const strataCounts: Record<string, number> = {};
++    allResponses.forEach((r) => {
++      const s = getStrata(r.jenis_rs, r.kelas_rs);
++      strataCounts[s] = (strataCounts[s] || 0) + 1;
++    });
++
++    const strataQuota = strataTargets.map((st) => ({
++      ...st,
++      current: strataCounts[st.strata] || 0,
++      percentage: Math.round(
++        ((strataCounts[st.strata] || 0) / st.target) * 100
++      ),
++    }));
++
++    // Province stats
++    const provTargetRS: Record<string, number> = {};
++    HOSPITALS.forEach((h) => {
++      provTargetRS[h.provinsi] = (provTargetRS[h.provinsi] || 0) + 1;
++    });
++
++    const provCounts: Record<string, number> = {};
++    allResponses.forEach((r) => {
++      if (r.provinsi) {
++        provCounts[r.provinsi] = (provCounts[r.provinsi] || 0) + 1;
++      }
++    });
++
++    const provinsiOrder = [
++      "Sumatera Barat",
++      "DKI Jakarta",
++      "Jawa Barat",
++      "Jawa Tengah",
++      "DI Yogyakarta",
++      "Jawa Timur",
++      "Banten",
++    ];
++
++    const provinsiStats = provinsiOrder.map((p) => {
++      const targetRS = provTargetRS[p] || 0;
++      const targetResp = targetRS * 3;
++      const current = provCounts[p] || 0;
++      return {
++        provinsi: p,
++        current,
++        targetRS,
++        targetResp,
++        percentage: targetResp > 0 ? Math.round((current / targetResp) * 100) : 0,
++      };
++    });
++
++    // Add "Lainnya" if any responses from other provinces
++    const otherCount = allResponses.filter(
++      (r) => r.provinsi && !provinsiOrder.includes(r.provinsi)
++    ).length;
++    if (otherCount > 0) {
++      provinsiStats.push({
++        provinsi: "Lainnya",
++        current: otherCount,
++        targetRS: 0,
++        targetResp: 0,
++        percentage: 0,
++      });
++    }
++
++    // Profesi stats
++    const profesiCounts: Record<string, number> = {};
++    allResponses.forEach((r) => {
++      if (r.profesi) {
++        profesiCounts[r.profesi] = (profesiCounts[r.profesi] || 0) + 1;
++      }
++    });
++
++    const profesiStats = Object.entries(profesiCounts).map(([p, count]) => ({
++      profesi: p,
++      count,
++      percentage: total > 0 ? Math.round((count / total) * 100) : 0,
++    }));
++
++    // Hospital stats
++    const hospitalCounts: Record<number, number> = {};
++    allResponses.forEach((r) => {
++      if (r.hospital_id) {
++        hospitalCounts[r.hospital_id] =
++          (hospitalCounts[r.hospital_id] || 0) + 1;
++      }
++    });
++
++    const hospitalStats = HOSPITALS.map((h) => {
++      const current = hospitalCounts[h.id] || 0;
++      const target = 3;
++      let status: "complete" | "partial" | "empty" = "empty";
++      if (current >= target) status = "complete";
++      else if (current > 0) status = "partial";
++      return {
++        id: h.id,
++        nama: h.nama,
++        strata: h.strata,
++        provinsi: h.provinsi,
++        kotaKab: h.kotaKab,
++        current,
++        target,
++        status,
++      };
++    });
++
++    return NextResponse.json({
++      totalResponses: total,
++      target: 300,
++      lastSubmission,
++      strataQuota,
++      provinsiStats,
++      profesiStats,
++      hospitalStats,
++    });
++  } catch (err) {
++    console.error("Dashboard error:", err);
++    return NextResponse.json(
++      { error: "Internal server error" },
++      { status: 500 }
++    );
++  }
++}
+diff --git a/src/app/api/submit/route.ts b/src/app/api/submit/route.ts
+index d52ebcf..857b73c 100644
+--- a/src/app/api/submit/route.ts
++++ b/src/app/api/submit/route.ts
+@@ -27,6 +27,9 @@ export async function POST(request: Request) {
+       submitted_at: new Date().toISOString(),
+       jenis_rs: data.jenisRS,
+       kelas_rs: data.kelasRS,
++      provinsi: data.provinsiDetail || null,
++      hospital_id: data.hospitalId || null,
++      nama_rs: data.namaRS || null,
+       wilayah: data.wilayah,
+       profesi: data.profesi,
+       pengalaman: data.pengalaman,
+diff --git a/src/app/dashboard/layout.tsx b/src/app/dashboard/layout.tsx
+new file mode 100644
+index 0000000..16ee6d2
+--- /dev/null
++++ b/src/app/dashboard/layout.tsx
+@@ -0,0 +1,7 @@
++export default function DashboardLayout({
++  children,
++}: {
++  children: React.ReactNode;
++}) {
++  return <>{children}</>;
++}
+diff --git a/src/app/dashboard/login/page.tsx b/src/app/dashboard/login/page.tsx
+new file mode 100644
+index 0000000..52182b7
+--- /dev/null
++++ b/src/app/dashboard/login/page.tsx
+@@ -0,0 +1,85 @@
++"use client";
++
++import { useState } from "react";
++import { useRouter } from "next/navigation";
++
++export default function DashboardLogin() {
++  const [password, setPassword] = useState("");
++  const [error, setError] = useState("");
++  const [loading, setLoading] = useState(false);
++  const router = useRouter();
++
++  const handleSubmit = async (e: React.FormEvent) => {
++    e.preventDefault();
++    setLoading(true);
++    setError("");
++
++    try {
++      const res = await fetch("/api/dashboard/login", {
++        method: "POST",
++        headers: { "Content-Type": "application/json" },
++        body: JSON.stringify({ password }),
++      });
++
++      if (res.ok) {
++        router.push("/dashboard");
++        router.refresh();
++      } else {
++        setError("Password salah. Silakan coba lagi.");
++      }
++    } catch {
++      setError("Terjadi kesalahan koneksi.");
++    } finally {
++      setLoading(false);
++    }
++  };
++
++  return (
++    <div className="min-h-screen flex items-center justify-center bg-gray-50">
++      <div className="w-full max-w-sm">
++        <form
++          onSubmit={handleSubmit}
++          className="bg-white rounded-2xl shadow-sm border border-gray-200 p-8 space-y-6"
++        >
++          <div className="text-center">
++            <h1 className="text-xl font-bold text-gray-900">
++              Dashboard Monitoring
++            </h1>
++            <p className="text-sm text-gray-500 mt-1">
++              Masukkan password untuk mengakses dashboard
++            </p>
++          </div>
++
++          <div className="space-y-2">
++            <label
++              htmlFor="password"
++              className="block text-sm font-medium text-gray-700"
++            >
++              Password
++            </label>
++            <input
++              id="password"
++              type="password"
++              value={password}
++              onChange={(e) => setPassword(e.target.value)}
++              className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
++              placeholder="Masukkan password..."
++              autoFocus
++            />
++            {error && (
++              <p className="text-xs text-red-600">{error}</p>
++            )}
++          </div>
++
++          <button
++            type="submit"
++            disabled={loading || !password}
++            className="w-full rounded-lg bg-gray-900 px-4 py-3 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
++          >
++            {loading ? "Memverifikasi..." : "Masuk"}
++          </button>
++        </form>
++      </div>
++    </div>
++  );
++}
+diff --git a/src/app/dashboard/page.tsx b/src/app/dashboard/page.tsx
+new file mode 100644
+index 0000000..72a006b
+--- /dev/null
++++ b/src/app/dashboard/page.tsx
+@@ -0,0 +1,381 @@
++"use client";
++
++import { useState, useEffect, useCallback } from "react";
++
++interface StrataQuota {
++  strata: string;
++  label: string;
++  target: number;
++  current: number;
++  percentage: number;
++}
++
++interface ProvinsiStat {
++  provinsi: string;
++  current: number;
++  targetRS: number;
++  targetResp: number;
++  percentage: number;
++}
++
++interface ProfesiStat {
++  profesi: string;
++  count: number;
++  percentage: number;
++}
++
++interface HospitalStat {
++  id: number;
++  nama: string;
++  strata: string;
++  provinsi: string;
++  kotaKab: string;
++  current: number;
++  target: number;
++  status: "complete" | "partial" | "empty";
++}
++
++interface DashboardData {
++  totalResponses: number;
++  target: number;
++  lastSubmission: string | null;
++  strataQuota: StrataQuota[];
++  provinsiStats: ProvinsiStat[];
++  profesiStats: ProfesiStat[];
++  hospitalStats: HospitalStat[];
++}
++
++function ProgressBar({ current, target, className = "" }: { current: number; target: number; className?: string }) {
++  const pct = target > 0 ? Math.min(Math.round((current / target) * 100), 100) : 0;
++  const color = pct >= 100 ? "bg-emerald-500" : pct >= 70 ? "bg-blue-500" : pct >= 40 ? "bg-amber-500" : "bg-red-400";
++  return (
++    <div className={`flex items-center gap-3 ${className}`}>
++      <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
++        <div className={`h-full rounded-full transition-all duration-500 ${color}`} style={{ width: `${pct}%` }} />
++      </div>
++      <span className="text-sm font-mono text-gray-600 w-20 text-right">{current}/{target}</span>
++      <span className={`text-xs font-medium w-12 text-right ${pct >= 100 ? "text-emerald-600" : pct < 40 ? "text-red-500" : "text-gray-500"}`}>
++        {pct}%
++      </span>
++    </div>
++  );
++}
++
++function StatusBadge({ status }: { status: string }) {
++  if (status === "complete") return <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-50 text-emerald-700">✓ Selesai</span>;
++  if (status === "partial") return <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-50 text-amber-700">◐ Sebagian</span>;
++  return <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-50 text-gray-500">○ Belum</span>;
++}
++
++function timeAgo(dateStr: string): string {
++  const diff = Date.now() - new Date(dateStr).getTime();
++  const mins = Math.floor(diff / 60000);
++  if (mins < 1) return "baru saja";
++  if (mins < 60) return `${mins} menit lalu`;
++  const hours = Math.floor(mins / 60);
++  if (hours < 24) return `${hours} jam lalu`;
++  const days = Math.floor(hours / 24);
++  return `${days} hari lalu`;
++}
++
++export default function DashboardPage() {
++  const [data, setData] = useState<DashboardData | null>(null);
++  const [loading, setLoading] = useState(true);
++  const [error, setError] = useState("");
++  const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
++  const [rsFilter, setRsFilter] = useState<"all" | "complete" | "partial" | "empty">("all");
++  const [rsSearch, setRsSearch] = useState("");
++  const [strataFilter, setStrataFilter] = useState("all");
++
++  const fetchData = useCallback(async () => {
++    try {
++      const res = await fetch("/api/dashboard");
++      if (res.status === 401) {
++        window.location.href = "/dashboard/login";
++        return;
++      }
++      if (!res.ok) throw new Error("Gagal memuat data");
++      const json = await res.json();
++      setData(json);
++      setError("");
++      setLastRefresh(new Date());
++    } catch (err) {
++      setError(err instanceof Error ? err.message : "Terjadi kesalahan");
++    } finally {
++      setLoading(false);
++    }
++  }, []);
++
++  useEffect(() => {
++    fetchData();
++    const interval = setInterval(fetchData, 30000);
++    return () => clearInterval(interval);
++  }, [fetchData]);
++
++  const handleExport = async () => {
++    try {
++      const res = await fetch("/api/dashboard/export");
++      if (!res.ok) throw new Error("Gagal export");
++      const blob = await res.blob();
++      const url = URL.createObjectURL(blob);
++      const a = document.createElement("a");
++      a.href = url;
++      a.download = `responses_${new Date().toISOString().slice(0, 10)}.csv`;
++      a.click();
++      URL.revokeObjectURL(url);
++    } catch {
++      alert("Gagal mengunduh CSV");
++    }
++  };
++
++  if (loading) {
++    return (
++      <div className="min-h-screen flex items-center justify-center bg-gray-50">
++        <div className="text-center space-y-3">
++          <div className="animate-spin w-8 h-8 border-4 border-gray-900 border-t-transparent rounded-full mx-auto" />
++          <p className="text-sm text-gray-500">Memuat dashboard...</p>
++        </div>
++      </div>
++    );
++  }
++
++  if (error || !data) {
++    return (
++      <div className="min-h-screen flex items-center justify-center bg-gray-50">
++        <div className="text-center space-y-3">
++          <p className="text-red-600">{error || "Data tidak tersedia"}</p>
++          <button onClick={fetchData} className="text-sm text-blue-600 hover:underline">Coba lagi</button>
++        </div>
++      </div>
++    );
++  }
++
++  const totalPct = Math.round((data.totalResponses / data.target) * 100);
++  const completedRS = data.hospitalStats.filter(h => h.status === "complete").length;
++  const partialRS = data.hospitalStats.filter(h => h.status === "partial").length;
++  const emptyRS = data.hospitalStats.filter(h => h.status === "empty").length;
++
++  const filteredHospitals = data.hospitalStats.filter(h => {
++    if (rsFilter !== "all" && h.status !== rsFilter) return false;
++    if (strataFilter !== "all" && h.strata !== strataFilter) return false;
++    if (rsSearch && !h.nama.toLowerCase().includes(rsSearch.toLowerCase()) && !h.provinsi.toLowerCase().includes(rsSearch.toLowerCase())) return false;
++    return true;
++  });
++
++  return (
++    <div className="min-h-screen bg-gray-50">
++      {/* Header */}
++      <div className="bg-white border-b border-gray-200 sticky top-0 z-10">
++        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4">
++          <div className="flex items-center justify-between">
++            <div>
++              <h1 className="text-lg font-bold text-gray-900">Dashboard Monitoring Kuesioner</h1>
++              <p className="text-xs text-gray-500 mt-0.5">
++                Auto-refresh 30 detik · Terakhir: {lastRefresh.toLocaleTimeString("id-ID")}
++              </p>
++            </div>
++            <div className="flex items-center gap-3">
++              <button
++                onClick={fetchData}
++                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50 transition-colors"
++              >
++                ↻ Refresh
++              </button>
++              <button
++                onClick={handleExport}
++                className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 px-3 py-2 text-xs font-medium text-white hover:bg-gray-800 transition-colors"
++              >
++                ↓ Export CSV
++              </button>
++            </div>
++          </div>
++        </div>
++      </div>
++
++      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
++        {/* Summary Cards */}
++        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
++          <div className="bg-white rounded-xl border border-gray-200 p-4">
++            <p className="text-xs text-gray-500 uppercase tracking-wide">Total Responden</p>
++            <p className="text-2xl font-bold text-gray-900 mt-1">
++              {data.totalResponses}<span className="text-sm font-normal text-gray-400">/{data.target}</span>
++            </p>
++            <div className="mt-2 h-1.5 bg-gray-100 rounded-full overflow-hidden">
++              <div className={`h-full rounded-full ${totalPct >= 100 ? "bg-emerald-500" : "bg-blue-500"}`} style={{ width: `${Math.min(totalPct, 100)}%` }} />
++            </div>
++            <p className="text-xs text-gray-500 mt-1">{totalPct}% tercapai</p>
++          </div>
++          <div className="bg-white rounded-xl border border-gray-200 p-4">
++            <p className="text-xs text-gray-500 uppercase tracking-wide">RS Selesai</p>
++            <p className="text-2xl font-bold text-emerald-600 mt-1">
++              {completedRS}<span className="text-sm font-normal text-gray-400">/100</span>
++            </p>
++            <p className="text-xs text-gray-500 mt-1">{partialRS} sebagian · {emptyRS} belum</p>
++          </div>
++          <div className="bg-white rounded-xl border border-gray-200 p-4">
++            <p className="text-xs text-gray-500 uppercase tracking-wide">Respons Terakhir</p>
++            <p className="text-lg font-semibold text-gray-900 mt-1">
++              {data.lastSubmission ? timeAgo(data.lastSubmission) : "—"}
++            </p>
++          </div>
++          <div className="bg-white rounded-xl border border-gray-200 p-4">
++            <p className="text-xs text-gray-500 uppercase tracking-wide">Strata Penuh</p>
++            <p className="text-2xl font-bold text-gray-900 mt-1">
++              {data.strataQuota.filter(s => s.current >= s.target).length}<span className="text-sm font-normal text-gray-400">/5</span>
++            </p>
++          </div>
++        </div>
++
++        {/* Strata Quota */}
++        <div className="bg-white rounded-xl border border-gray-200 p-6">
++          <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-4">Kuota per Strata</h2>
++          <div className="space-y-4">
++            {data.strataQuota.map((s) => (
++              <div key={s.strata}>
++                <div className="flex items-center justify-between mb-1">
++                  <span className="text-sm text-gray-700">{s.label}</span>
++                  {s.current >= s.target && <span className="text-xs text-emerald-600 font-medium">✓ Tercapai</span>}
++                </div>
++                <ProgressBar current={s.current} target={s.target} />
++              </div>
++            ))}
++          </div>
++        </div>
++
++        {/* Province & Profesi Grid */}
++        <div className="grid md:grid-cols-2 gap-6">
++          {/* Province Stats */}
++          <div className="bg-white rounded-xl border border-gray-200 p-6">
++            <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-4">Per Provinsi</h2>
++            <div className="space-y-3">
++              {data.provinsiStats.map((p) => (
++                <div key={p.provinsi}>
++                  <div className="flex items-center justify-between mb-1">
++                    <span className="text-sm text-gray-700">{p.provinsi}</span>
++                    <span className="text-xs text-gray-400">{p.targetRS} RS</span>
++                  </div>
++                  <ProgressBar current={p.current} target={p.targetResp} />
++                </div>
++              ))}
++            </div>
++          </div>
++
++          {/* Profesi Stats */}
++          <div className="bg-white rounded-xl border border-gray-200 p-6">
++            <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-4">Distribusi Profesi</h2>
++            {data.profesiStats.length === 0 ? (
++              <p className="text-sm text-gray-400">Belum ada data</p>
++            ) : (
++              <div className="space-y-3">
++                {data.profesiStats.sort((a, b) => b.count - a.count).map((p) => (
++                  <div key={p.profesi} className="flex items-center justify-between">
++                    <span className="text-sm text-gray-700 flex-1">{p.profesi}</span>
++                    <div className="flex items-center gap-2">
++                      <div className="w-24 h-2 bg-gray-100 rounded-full overflow-hidden">
++                        <div className="h-full bg-blue-500 rounded-full" style={{ width: `${p.percentage}%` }} />
++                      </div>
++                      <span className="text-sm font-mono text-gray-600 w-8 text-right">{p.count}</span>
++                      <span className="text-xs text-gray-400 w-10 text-right">{p.percentage}%</span>
++                    </div>
++                  </div>
++                ))}
++              </div>
++            )}
++
++            {/* Ideal balance note */}
++            <div className="mt-6 p-3 bg-gray-50 rounded-lg">
++              <p className="text-xs text-gray-500">
++                <span className="font-medium">Target ideal:</span> ~1/3 Manajemen, ~1/3 IT/SI, ~1/3 Medis per RS
++              </p>
++            </div>
++          </div>
++        </div>
++
++        {/* Hospital Table */}
++        <div className="bg-white rounded-xl border border-gray-200 p-6">
++          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
++            <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">Status per Rumah Sakit</h2>
++            <div className="flex flex-wrap items-center gap-2">
++              <input
++                type="text"
++                placeholder="Cari RS..."
++                value={rsSearch}
++                onChange={(e) => setRsSearch(e.target.value)}
++                className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs w-40 focus:outline-none focus:ring-1 focus:ring-blue-500"
++              />
++              <select
++                value={rsFilter}
++                onChange={(e) => setRsFilter(e.target.value as typeof rsFilter)}
++                className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
++              >
++                <option value="all">Semua Status</option>
++                <option value="complete">✓ Selesai</option>
++                <option value="partial">◐ Sebagian</option>
++                <option value="empty">○ Belum</option>
++              </select>
++              <select
++                value={strataFilter}
++                onChange={(e) => setStrataFilter(e.target.value)}
++                className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
++              >
++                <option value="all">Semua Strata</option>
++                <option value="Publik_A">Publik A</option>
++                <option value="Publik_B">Publik B</option>
++                <option value="Publik_C">Publik C</option>
++                <option value="Swasta_AB">Swasta A&B</option>
++                <option value="Swasta_C">Swasta C</option>
++              </select>
++            </div>
++          </div>
++
++          <div className="overflow-x-auto">
++            <table className="w-full text-sm">
++              <thead>
++                <tr className="border-b border-gray-200">
++                  <th className="text-left py-2 pr-4 text-xs font-medium text-gray-500 uppercase">No</th>
++                  <th className="text-left py-2 pr-4 text-xs font-medium text-gray-500 uppercase">Nama RS</th>
++                  <th className="text-left py-2 pr-4 text-xs font-medium text-gray-500 uppercase">Strata</th>
++                  <th className="text-left py-2 pr-4 text-xs font-medium text-gray-500 uppercase">Provinsi</th>
++                  <th className="text-center py-2 pr-4 text-xs font-medium text-gray-500 uppercase">Responden</th>
++                  <th className="text-center py-2 text-xs font-medium text-gray-500 uppercase">Status</th>
++                </tr>
++              </thead>
++              <tbody className="divide-y divide-gray-100">
++                {filteredHospitals.map((h, i) => (
++                  <tr key={h.id} className="hover:bg-gray-50 transition-colors">
++                    <td className="py-2.5 pr-4 text-gray-400 text-xs">{i + 1}</td>
++                    <td className="py-2.5 pr-4">
++                      <div className="font-medium text-gray-900 text-sm">{h.nama}</div>
++                      <div className="text-xs text-gray-400">{h.kotaKab}</div>
++                    </td>
++                    <td className="py-2.5 pr-4">
++                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">
++                        {h.strata.replace("_", " ")}
++                      </span>
++                    </td>
++                    <td className="py-2.5 pr-4 text-sm text-gray-600">{h.provinsi}</td>
++                    <td className="py-2.5 pr-4 text-center font-mono text-sm">
++                      <span className={h.current >= h.target ? "text-emerald-600 font-bold" : h.current > 0 ? "text-amber-600" : "text-gray-400"}>
++                        {h.current}
++                      </span>
++                      <span className="text-gray-300">/{h.target}</span>
++                    </td>
++                    <td className="py-2.5 text-center"><StatusBadge status={h.status} /></td>
++                  </tr>
++                ))}
++              </tbody>
++            </table>
++          </div>
++
++          {filteredHospitals.length === 0 && (
++            <p className="text-sm text-gray-400 text-center py-8">Tidak ada RS yang sesuai filter.</p>
++          )}
++
++          <div className="mt-4 pt-4 border-t border-gray-100 text-xs text-gray-400">
++            Menampilkan {filteredHospitals.length} dari {data.hospitalStats.length} RS
++          </div>
++        </div>
++      </div>
++    </div>
++  );
++}
+diff --git a/src/components/survey/hospital-selector.tsx b/src/components/survey/hospital-selector.tsx
+new file mode 100644
+index 0000000..f03f3b0
+--- /dev/null
++++ b/src/components/survey/hospital-selector.tsx
+@@ -0,0 +1,194 @@
++"use client";
++
++import { useMemo, useState } from "react";
++import { cn } from "@/lib/utils";
++import { filterHospitals, type Hospital } from "@/lib/hospitals";
++
++interface HospitalSelectorProps {
++  jenisRS?: string;
++  kelasRS?: string;
++  provinsi?: string;
++  value?: string;
++  hospitalId?: number;
++  onChange: (nama: string, hospitalId?: number) => void;
++  error?: string;
++}
++
++export function HospitalSelector({
++  jenisRS,
++  kelasRS,
++  provinsi,
++  value,
++  onChange,
++  error,
++}: HospitalSelectorProps) {
++  const [search, setSearch] = useState("");
++  const [isOpen, setIsOpen] = useState(false);
++
++  const isLainnya = provinsi === "Lainnya";
++  const hasFilters = jenisRS && kelasRS && provinsi;
++
++  const filtered = useMemo(() => {
++    if (!hasFilters || isLainnya) return [];
++    return filterHospitals(jenisRS, kelasRS, provinsi);
++  }, [jenisRS, kelasRS, provinsi, hasFilters, isLainnya]);
++
++  const searchResults = useMemo(() => {
++    if (!search.trim()) return filtered;
++    const q = search.toLowerCase();
++    return filtered.filter(
++      (h) =>
++        h.nama.toLowerCase().includes(q) ||
++        h.kotaKab.toLowerCase().includes(q)
++    );
++  }, [filtered, search]);
++
++  // If "Lainnya" province, show text input
++  if (isLainnya) {
++    return (
++      <div className="space-y-2">
++        <label className="text-sm font-medium text-foreground">
++          Nama Rumah Sakit
++        </label>
++        <input
++          type="text"
++          placeholder="Ketik nama rumah sakit Anda..."
++          value={value || ""}
++          onChange={(e) => onChange(e.target.value, undefined)}
++          className="w-full rounded-lg border border-border bg-card px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
++        />
++        {error && <p className="text-xs text-destructive">{error}</p>}
++      </div>
++    );
++  }
++
++  // Not enough filters yet
++  if (!hasFilters) {
++    return (
++      <div className="space-y-2">
++        <label className="text-sm font-medium text-foreground">
++          Nama Rumah Sakit
++        </label>
++        <div className="rounded-lg border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
++          Pilih jenis RS, kelas, dan provinsi terlebih dahulu.
++        </div>
++      </div>
++    );
++  }
++
++  // No hospitals match
++  if (filtered.length === 0) {
++    return (
++      <div className="space-y-2">
++        <label className="text-sm font-medium text-foreground">
++          Nama Rumah Sakit
++        </label>
++        <input
++          type="text"
++          placeholder="RS Anda tidak ada di daftar — ketik nama manual..."
++          value={value || ""}
++          onChange={(e) => onChange(e.target.value, undefined)}
++          className="w-full rounded-lg border border-border bg-card px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
++        />
++        <p className="text-xs text-muted-foreground">
++          Tidak ada RS target di kombinasi filter ini. Silakan ketik nama RS
++          Anda secara manual.
++        </p>
++        {error && <p className="text-xs text-destructive">{error}</p>}
++      </div>
++    );
++  }
++
++  return (
++    <div className="space-y-2">
++      <label className="text-sm font-medium text-foreground">
++        Nama Rumah Sakit{" "}
++        <span className="text-muted-foreground font-normal">
++          ({filtered.length} RS tersedia)
++        </span>
++      </label>
++
++      {/* Search input */}
++      <div className="relative">
++        <input
++          type="text"
++          placeholder="Cari nama RS..."
++          value={value && !isOpen ? value : search}
++          onChange={(e) => {
++            setSearch(e.target.value);
++            setIsOpen(true);
++          }}
++          onFocus={() => {
++            setIsOpen(true);
++            setSearch("");
++          }}
++          className="w-full rounded-lg border border-border bg-card px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
++        />
++        {value && (
++          <button
++            type="button"
++            onClick={() => {
++              onChange("", undefined);
++              setSearch("");
++              setIsOpen(true);
++            }}
++            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground text-xs"
++          >
++            ✕
++          </button>
++        )}
++      </div>
++
++      {/* Dropdown list */}
++      {isOpen && (
++        <div className="max-h-60 overflow-y-auto rounded-lg border border-border bg-card shadow-md">
++          {searchResults.length === 0 ? (
++            <div className="px-4 py-3 text-sm text-muted-foreground">
++              Tidak ditemukan. Ketik nama RS yang tepat di kolom pencarian.
++            </div>
++          ) : (
++            searchResults.map((h) => (
++              <button
++                key={h.id}
++                type="button"
++                onClick={() => {
++                  onChange(h.nama, h.id);
++                  setSearch("");
++                  setIsOpen(false);
++                }}
++                className={cn(
++                  "w-full text-left px-4 py-3 text-sm border-b border-border/50 last:border-0 transition-colors",
++                  value === h.nama
++                    ? "bg-primary/5 text-primary font-medium"
++                    : "hover:bg-accent/50 text-foreground"
++                )}
++              >
++                <div className="font-medium">{h.nama}</div>
++                <div className="text-xs text-muted-foreground">
++                  {h.kotaKab} — Kelas {h.kelas} {h.kepemilikan}
++                </div>
++              </button>
++            ))
++          )}
++
++          {/* Option to type manually */}
++          <button
++            type="button"
++            onClick={() => {
++              onChange(search || "", undefined);
++              setIsOpen(false);
++            }}
++            className="w-full text-left px-4 py-3 text-sm text-muted-foreground hover:bg-accent/50 border-t border-border"
++          >
++            RS saya tidak ada di daftar — gunakan nama:{" "}
++            <span className="font-medium text-foreground">
++              {search || "(ketik di kolom pencarian)"}
++            </span>
++          </button>
++        </div>
++      )}
++
++      {error && <p className="text-xs text-destructive">{error}</p>}
++    </div>
++  );
++}
+diff --git a/src/components/survey/step-demographics.tsx b/src/components/survey/step-demographics.tsx
+index 61f2b0d..8db3ec8 100644
+--- a/src/components/survey/step-demographics.tsx
++++ b/src/components/survey/step-demographics.tsx
+@@ -2,21 +2,52 @@
+ 
+ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+ import { DemographicField } from "./demographic-field";
++import { HospitalSelector } from "./hospital-selector";
+ import { DEMOGRAPHICS } from "@/lib/questions";
++import { getWilayahFromProvinsi } from "@/lib/hospitals";
+ 
+ interface StepDemographicsProps {
+-  values: Record<string, string | undefined>;
++  values: Record<string, string | number | undefined>;
+   errors: Record<string, string | undefined>;
+-  onChange: (field: string, value: string) => void;
++  onChange: (field: string, value: string | number) => void;
+ }
+ 
+-const FIELD_ORDER = ["jenisRS", "kelasRS", "wilayah", "profesi", "pengalaman"];
++const BASIC_FIELDS = ["jenisRS", "kelasRS"];
++const POST_RS_FIELDS = ["profesi", "pengalaman"];
+ 
+ export function StepDemographics({
+   values,
+   errors,
+   onChange,
+ }: StepDemographicsProps) {
++  const handleProvinsiChange = (value: string) => {
++    onChange("provinsiDetail", value);
++
++    // Auto-fill wilayah
++    const wilayah = getWilayahFromProvinsi(value);
++    if (wilayah) {
++      onChange("wilayah", wilayah);
++    } else {
++      onChange("wilayah", "");
++    }
++
++    // Clear RS selection when province changes
++    onChange("namaRS", "");
++    onChange("hospitalId", 0);
++  };
++
++  const handleHospitalChange = (nama: string, hospitalId?: number) => {
++    onChange("namaRS", nama);
++    if (hospitalId) {
++      onChange("hospitalId", hospitalId);
++    } else {
++      onChange("hospitalId", 0);
++    }
++  };
++
++  const showWilayahManual =
++    values.provinsiDetail === "Lainnya" && !values.wilayah;
++
+   return (
+     <div className="space-y-6">
+       <div>
+@@ -33,14 +64,81 @@ export function StepDemographics({
+           </CardTitle>
+         </CardHeader>
+         <CardContent className="space-y-6">
+-          {FIELD_ORDER.map((field) => {
++          {/* 1-2. Jenis RS & Kelas RS */}
++          {BASIC_FIELDS.map((field) => {
++            const demo = DEMOGRAPHICS[field];
++            return (
++              <DemographicField
++                key={field}
++                label={demo.label}
++                options={demo.options}
++                value={values[field] as string | undefined}
++                onChange={(v) => onChange(field, v)}
++                error={errors[field]}
++              />
++            );
++          })}
++
++          {/* 3. Provinsi */}
++          <DemographicField
++            label={DEMOGRAPHICS.provinsiDetail.label}
++            options={DEMOGRAPHICS.provinsiDetail.options}
++            value={values.provinsiDetail as string | undefined}
++            onChange={handleProvinsiChange}
++            error={errors.provinsiDetail}
++          />
++
++          {/* 4. Nama RS (cascading dropdown) */}
++          <HospitalSelector
++            jenisRS={values.jenisRS as string | undefined}
++            kelasRS={values.kelasRS as string | undefined}
++            provinsi={values.provinsiDetail as string | undefined}
++            value={values.namaRS as string | undefined}
++            hospitalId={values.hospitalId as number | undefined}
++            onChange={handleHospitalChange}
++            error={errors.namaRS}
++          />
++
++          {/* 5. Wilayah — auto-filled or manual for "Lainnya" */}
++          {showWilayahManual ? (
++            <DemographicField
++              label={DEMOGRAPHICS.wilayah.label}
++              options={DEMOGRAPHICS.wilayah.options}
++              value={values.wilayah as string | undefined}
++              onChange={(v) => onChange("wilayah", v)}
++              error={errors.wilayah}
++            />
++          ) : values.provinsiDetail && values.provinsiDetail !== "Lainnya" ? (
++            <div className="space-y-2">
++              <label className="text-sm font-medium text-foreground">
++                {DEMOGRAPHICS.wilayah.label}
++              </label>
++              <div className="rounded-lg border border-primary/30 bg-primary/5 px-4 py-3 text-sm text-primary font-medium">
++                {values.wilayah || "\u2014"}
++                <span className="text-xs text-muted-foreground font-normal ml-2">
++                  (otomatis berdasarkan provinsi)
++                </span>
++              </div>
++            </div>
++          ) : (
++            <DemographicField
++              label={DEMOGRAPHICS.wilayah.label}
++              options={DEMOGRAPHICS.wilayah.options}
++              value={values.wilayah as string | undefined}
++              onChange={(v) => onChange("wilayah", v)}
++              error={errors.wilayah}
++            />
++          )}
++
++          {/* 6-7. Profesi & Pengalaman */}
++          {POST_RS_FIELDS.map((field) => {
+             const demo = DEMOGRAPHICS[field];
+             return (
+               <DemographicField
+                 key={field}
+                 label={demo.label}
+                 options={demo.options}
+-                value={values[field]}
++                value={values[field] as string | undefined}
+                 onChange={(v) => onChange(field, v)}
+                 error={errors[field]}
+               />
+diff --git a/src/components/survey/step-review.tsx b/src/components/survey/step-review.tsx
+index d9cbb80..0b30b16 100644
+--- a/src/components/survey/step-review.tsx
++++ b/src/components/survey/step-review.tsx
+@@ -3,7 +3,7 @@
+ import { Button } from "@/components/ui/button";
+ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+ import { Separator } from "@/components/ui/separator";
+-import { DEMOGRAPHICS, SECTIONS, LIKERT_LABELS } from "@/lib/questions";
++import { SECTIONS, LIKERT_LABELS } from "@/lib/questions";
+ import type { PartialSurveyData } from "@/lib/types";
+ 
+ interface StepReviewProps {
+@@ -16,11 +16,23 @@ interface StepReviewProps {
+ const DEMO_FIELDS = [
+   "jenisRS",
+   "kelasRS",
++  "provinsiDetail",
++  "namaRS",
+   "wilayah",
+   "profesi",
+   "pengalaman",
+ ] as const;
+ 
++const DEMO_LABELS: Record<string, string> = {
++  jenisRS: "Jenis Rumah Sakit",
++  kelasRS: "Kelas Rumah Sakit",
++  provinsiDetail: "Provinsi",
++  namaRS: "Nama Rumah Sakit",
++  wilayah: "Wilayah / Pulau",
++  profesi: "Profesi / Jabatan",
++  pengalaman: "Pengalaman Kerja di RS Ini",
++};
++
+ export function StepReview({
+   formData,
+   onEdit,
+@@ -56,7 +68,7 @@ export function StepReview({
+             {DEMO_FIELDS.map((field) => (
+               <div key={field} className="flex justify-between text-sm">
+                 <span className="text-muted-foreground">
+-                  {DEMOGRAPHICS[field].label}
++                  {DEMO_LABELS[field]}
+                 </span>
+                 <span className="font-medium text-foreground">
+                   {(formData as Record<string, unknown>)[field] as string || "-"}
+diff --git a/src/components/survey/survey-wizard.tsx b/src/components/survey/survey-wizard.tsx
+index 5893eb0..a2ca75f 100644
+--- a/src/components/survey/survey-wizard.tsx
++++ b/src/components/survey/survey-wizard.tsx
+@@ -82,7 +82,7 @@ export function SurveyWizard() {
+   );
+ 
+   const handleDemographicChange = useCallback(
+-    (field: string, value: string) => {
++    (field: string, value: string | number) => {
+       updateFormData({ [field]: value } as PartialSurveyData);
+       setErrors((prev) => ({ ...prev, [field]: undefined }));
+     },
+diff --git a/src/lib/hospitals.ts b/src/lib/hospitals.ts
+new file mode 100644
+index 0000000..7f85684
+--- /dev/null
++++ b/src/lib/hospitals.ts
+@@ -0,0 +1,147 @@
++export interface Hospital {
++  id: number;
++  nama: string;
++  kelas: "A" | "B" | "C";
++  kepemilikan: "Publik" | "Swasta";
++  provinsi: string;
++  kotaKab: string;
++  strata: string;
++}
++
++export const HOSPITALS: Hospital[] = [
++  { id: 1, nama: "RS Jiwa Prof. Dr. HB Saanin", kelas: "A", kepemilikan: "Publik", provinsi: "Sumatera Barat", kotaKab: "Kota Padang", strata: "Publik_A" },
++  { id: 2, nama: "RSUP Dr. M. Djamil", kelas: "A", kepemilikan: "Publik", provinsi: "Sumatera Barat", kotaKab: "Kota Padang", strata: "Publik_A" },
++  { id: 3, nama: "RS Jantung dan Pembuluh Darah Harapan Kita", kelas: "A", kepemilikan: "Publik", provinsi: "DKI Jakarta", kotaKab: "Jakarta Barat", strata: "Publik_A" },
++  { id: 4, nama: "RSUD Tarakan", kelas: "A", kepemilikan: "Publik", provinsi: "DKI Jakarta", kotaKab: "Jakarta Pusat", strata: "Publik_A" },
++  { id: 5, nama: "RS Jiwa Provinsi Jawa Barat", kelas: "A", kepemilikan: "Publik", provinsi: "Jawa Barat", kotaKab: "Kab. Bandung Barat", strata: "Publik_A" },
++  { id: 6, nama: "RS Jiwa dr. H. Marzoeki Mahdi", kelas: "A", kepemilikan: "Publik", provinsi: "Jawa Barat", kotaKab: "Kota Bogor", strata: "Publik_A" },
++  { id: 7, nama: "RS Jiwa Daerah Dr. Amino Gondohutomo", kelas: "A", kepemilikan: "Publik", provinsi: "Jawa Tengah", kotaKab: "Kota Semarang", strata: "Publik_A" },
++  { id: 8, nama: "RS Jiwa Daerah Dr. RM. Soedjarwadi", kelas: "A", kepemilikan: "Publik", provinsi: "Jawa Tengah", kotaKab: "Kab. Klaten", strata: "Publik_A" },
++  { id: 9, nama: "RS Jiwa Grhasia", kelas: "A", kepemilikan: "Publik", provinsi: "DI Yogyakarta", kotaKab: "Kab. Sleman", strata: "Publik_A" },
++  { id: 10, nama: "RS Jiwa Dr. Radjiman Wediodiningrat Lawang", kelas: "A", kepemilikan: "Publik", provinsi: "Jawa Timur", kotaKab: "Kab. Malang", strata: "Publik_A" },
++  { id: 11, nama: "RS Paru Sumatera Barat", kelas: "B", kepemilikan: "Publik", provinsi: "Sumatera Barat", kotaKab: "Kab. Padang Pariaman", strata: "Publik_B" },
++  { id: 12, nama: "RS Stroke Nasional", kelas: "B", kepemilikan: "Publik", provinsi: "Sumatera Barat", kotaKab: "Kota Bukittinggi", strata: "Publik_B" },
++  { id: 13, nama: "RS. Universitas Andalas", kelas: "B", kepemilikan: "Publik", provinsi: "Sumatera Barat", kotaKab: "Kota Padang", strata: "Publik_B" },
++  { id: 14, nama: "RSUD Dr. Achmad Mochtar", kelas: "B", kepemilikan: "Publik", provinsi: "Sumatera Barat", kotaKab: "Kota Bukittinggi", strata: "Publik_B" },
++  { id: 15, nama: "RSUD Mohammad Natsir", kelas: "B", kepemilikan: "Publik", provinsi: "Sumatera Barat", kotaKab: "Kota Solok", strata: "Publik_B" },
++  { id: 16, nama: "RSUD Pariaman", kelas: "B", kepemilikan: "Publik", provinsi: "Sumatera Barat", kotaKab: "Kab. Padang Pariaman", strata: "Publik_B" },
++  { id: 17, nama: "RS Dharma Jaya", kelas: "B", kepemilikan: "Publik", provinsi: "DKI Jakarta", kotaKab: "Jakarta Pusat", strata: "Publik_B" },
++  { id: 18, nama: "RS Ketergantungan Obat", kelas: "B", kepemilikan: "Publik", provinsi: "DKI Jakarta", kotaKab: "Jakarta Timur", strata: "Publik_B" },
++  { id: 19, nama: "RS Ridwan Meuraksa", kelas: "B", kepemilikan: "Publik", provinsi: "DKI Jakarta", kotaKab: "Jakarta Timur", strata: "Publik_B" },
++  { id: 20, nama: "RS Bhayangkara Tk II Sartika Asih", kelas: "B", kepemilikan: "Publik", provinsi: "Jawa Barat", kotaKab: "Kota Bandung", strata: "Publik_B" },
++  { id: 21, nama: "RS Lanud dr. M. Salamun", kelas: "B", kepemilikan: "Publik", provinsi: "Jawa Barat", kotaKab: "Kota Bandung", strata: "Publik_B" },
++  { id: 22, nama: "RS Universitas Indonesia", kelas: "B", kepemilikan: "Publik", provinsi: "Jawa Barat", kotaKab: "Kab. Bogor", strata: "Publik_B" },
++  { id: 23, nama: "RSUD R Syamsudin SH", kelas: "B", kepemilikan: "Publik", provinsi: "Jawa Barat", kotaKab: "Kota Sukabumi", strata: "Publik_B" },
++  { id: 24, nama: "RSUD Waled", kelas: "B", kepemilikan: "Publik", provinsi: "Jawa Barat", kotaKab: "Kab. Cirebon", strata: "Publik_B" },
++  { id: 25, nama: "RSK GM Univ. Jenderal Soedirman", kelas: "B", kepemilikan: "Publik", provinsi: "Jawa Tengah", kotaKab: "Kab. Banyumas", strata: "Publik_B" },
++  { id: 26, nama: "RSUD Banyumas", kelas: "B", kepemilikan: "Publik", provinsi: "Jawa Tengah", kotaKab: "Kab. Banyumas", strata: "Publik_B" },
++  { id: 27, nama: "RSUD Dr. R.Soedjati Soemodiardjo", kelas: "B", kepemilikan: "Publik", provinsi: "Jawa Tengah", kotaKab: "Kab. Grobogan", strata: "Publik_B" },
++  { id: 28, nama: "RSUD RAA Soewondo Pati", kelas: "B", kepemilikan: "Publik", provinsi: "Jawa Tengah", kotaKab: "Kab. Pati", strata: "Publik_B" },
++  { id: 29, nama: "RS GM UGM Prof. Soedomo", kelas: "B", kepemilikan: "Publik", provinsi: "DI Yogyakarta", kotaKab: "Kota Yogyakarta", strata: "Publik_B" },
++  { id: 30, nama: "RS Haji Surabaya", kelas: "B", kepemilikan: "Publik", provinsi: "Jawa Timur", kotaKab: "Kota Surabaya", strata: "Publik_B" },
++  { id: 31, nama: "RS Universitas Airlangga", kelas: "B", kepemilikan: "Publik", provinsi: "Jawa Timur", kotaKab: "Kota Surabaya", strata: "Publik_B" },
++  { id: 32, nama: "RSUD Dr. R. Koesma Tuban", kelas: "B", kepemilikan: "Publik", provinsi: "Jawa Timur", kotaKab: "Kab. Tuban", strata: "Publik_B" },
++  { id: 33, nama: "RSUD Dr. Soegiri Lamongan", kelas: "B", kepemilikan: "Publik", provinsi: "Jawa Timur", kotaKab: "Kab. Lamongan", strata: "Publik_B" },
++  { id: 34, nama: "RSUD dr. Mohamad Soewandhie", kelas: "B", kepemilikan: "Publik", provinsi: "Jawa Timur", kotaKab: "Kota Surabaya", strata: "Publik_B" },
++  { id: 35, nama: "RSUD Kabupaten Tangerang", kelas: "B", kepemilikan: "Publik", provinsi: "Banten", kotaKab: "Kab. Tangerang", strata: "Publik_B" },
++  { id: 36, nama: "RSUD Arosuka Solok", kelas: "C", kepemilikan: "Publik", provinsi: "Sumatera Barat", kotaKab: "Kab. Solok", strata: "Publik_C" },
++  { id: 37, nama: "RSUD Dr Adnaan WD", kelas: "C", kepemilikan: "Publik", provinsi: "Sumatera Barat", kotaKab: "Kota Payakumbuh", strata: "Publik_C" },
++  { id: 38, nama: "RSUD Lubuk Basung", kelas: "C", kepemilikan: "Publik", provinsi: "Sumatera Barat", kotaKab: "Kab. Lima Puluh Kota", strata: "Publik_C" },
++  { id: 39, nama: "RSUD Padang Pariaman", kelas: "C", kepemilikan: "Publik", provinsi: "Sumatera Barat", kotaKab: "Kab. Padang Pariaman", strata: "Publik_C" },
++  { id: 40, nama: "RSUD Pasaman Barat", kelas: "C", kepemilikan: "Publik", provinsi: "Sumatera Barat", kotaKab: "Kab. Pasaman Barat", strata: "Publik_C" },
++  { id: 41, nama: "RSUD Prof Dr M.A Hanafiah", kelas: "C", kepemilikan: "Publik", provinsi: "Sumatera Barat", kotaKab: "Kab. Tanah Datar", strata: "Publik_C" },
++  { id: 42, nama: "RSUD Sawah Lunto", kelas: "C", kepemilikan: "Publik", provinsi: "Sumatera Barat", kotaKab: "Kota Sawahlunto", strata: "Publik_C" },
++  { id: 43, nama: "RSUD dr. Rasidin Padang", kelas: "C", kepemilikan: "Publik", provinsi: "Sumatera Barat", kotaKab: "Kota Padang", strata: "Publik_C" },
++  { id: 44, nama: "RS Antam Medika", kelas: "C", kepemilikan: "Publik", provinsi: "DKI Jakarta", kotaKab: "Jakarta Timur", strata: "Publik_C" },
++  { id: 45, nama: "RS Bhayangkara Brimob", kelas: "C", kepemilikan: "Publik", provinsi: "Jawa Barat", kotaKab: "Kota Depok", strata: "Publik_C" },
++  { id: 46, nama: "RSUD Jampang Kulon", kelas: "C", kepemilikan: "Publik", provinsi: "Jawa Barat", kotaKab: "Kab. Sukabumi", strata: "Publik_C" },
++  { id: 47, nama: "RSUD Majalengka", kelas: "C", kepemilikan: "Publik", provinsi: "Jawa Barat", kotaKab: "Kab. Majalengka", strata: "Publik_C" },
++  { id: 48, nama: "RSUD Bung Karno Kota Surakarta", kelas: "C", kepemilikan: "Publik", provinsi: "Jawa Tengah", kotaKab: "Kota Surakarta", strata: "Publik_C" },
++  { id: 49, nama: "RSUD Kab. Batang", kelas: "C", kepemilikan: "Publik", provinsi: "Jawa Tengah", kotaKab: "Kab. Batang", strata: "Publik_C" },
++  { id: 50, nama: "RSUD Kajen Kab. Pekalongan", kelas: "C", kepemilikan: "Publik", provinsi: "Jawa Tengah", kotaKab: "Kab. Pekalongan", strata: "Publik_C" },
++  { id: 51, nama: "RSUD Karanganyar", kelas: "C", kepemilikan: "Publik", provinsi: "Jawa Tengah", kotaKab: "Kab. Karanganyar", strata: "Publik_C" },
++  { id: 52, nama: "RSUD Kayen Pati", kelas: "C", kepemilikan: "Publik", provinsi: "Jawa Tengah", kotaKab: "Kab. Pati", strata: "Publik_C" },
++  { id: 53, nama: "RSUD Majenang", kelas: "C", kepemilikan: "Publik", provinsi: "Jawa Tengah", kotaKab: "Kab. Cilacap", strata: "Publik_C" },
++  { id: 54, nama: "RSUD Wonosari", kelas: "C", kepemilikan: "Publik", provinsi: "DI Yogyakarta", kotaKab: "Kab. Gunungkidul", strata: "Publik_C" },
++  { id: 55, nama: "RS Semen Gresik", kelas: "C", kepemilikan: "Publik", provinsi: "Jawa Timur", kotaKab: "Kab. Gresik", strata: "Publik_C" },
++  { id: 56, nama: "RS Tk III Dr Soedono Madiun", kelas: "C", kepemilikan: "Publik", provinsi: "Jawa Timur", kotaKab: "Kota Madiun", strata: "Publik_C" },
++  { id: 57, nama: "RS Universitas Brawijaya Malang", kelas: "C", kepemilikan: "Publik", provinsi: "Jawa Timur", kotaKab: "Kota Malang", strata: "Publik_C" },
++  { id: 58, nama: "RSUD Bhakti Dharma Husada", kelas: "C", kepemilikan: "Publik", provinsi: "Jawa Timur", kotaKab: "Kota Surabaya", strata: "Publik_C" },
++  { id: 59, nama: "RSUD Waluyo Jati Kraksaan", kelas: "C", kepemilikan: "Publik", provinsi: "Jawa Timur", kotaKab: "Kab. Probolinggo", strata: "Publik_C" },
++  { id: 60, nama: "RS Daan Mogot", kelas: "C", kepemilikan: "Publik", provinsi: "Banten", kotaKab: "Kota Tangerang", strata: "Publik_C" },
++  { id: 61, nama: "RS Khusus Gigi dan Mulut Baiturrahmah", kelas: "B", kepemilikan: "Swasta", provinsi: "Sumatera Barat", kotaKab: "Kota Padang", strata: "Swasta_AB" },
++  { id: 62, nama: "RS MMC Jakarta", kelas: "B", kepemilikan: "Swasta", provinsi: "DKI Jakarta", kotaKab: "Jakarta Selatan", strata: "Swasta_AB" },
++  { id: 63, nama: "RS Mayapada Jakarta", kelas: "B", kepemilikan: "Swasta", provinsi: "DKI Jakarta", kotaKab: "Jakarta Selatan", strata: "Swasta_AB" },
++  { id: 64, nama: "RS Medistra", kelas: "B", kepemilikan: "Swasta", provinsi: "DKI Jakarta", kotaKab: "Jakarta Selatan", strata: "Swasta_AB" },
++  { id: 65, nama: "RS Siloam Asri", kelas: "B", kepemilikan: "Swasta", provinsi: "DKI Jakarta", kotaKab: "Jakarta Selatan", strata: "Swasta_AB" },
++  { id: 66, nama: "RS Eka Bekasi", kelas: "B", kepemilikan: "Swasta", provinsi: "Jawa Barat", kotaKab: "Kab. Bekasi", strata: "Swasta_AB" },
++  { id: 67, nama: "RS GM Pendidikan Unjani", kelas: "B", kepemilikan: "Swasta", provinsi: "Jawa Barat", kotaKab: "Kota Cimahi", strata: "Swasta_AB" },
++  { id: 68, nama: "RS Mitra Keluarga Cikarang", kelas: "B", kepemilikan: "Swasta", provinsi: "Jawa Barat", kotaKab: "Kab. Bekasi", strata: "Swasta_AB" },
++  { id: 69, nama: "RS Sumber Waras Cirebon", kelas: "B", kepemilikan: "Swasta", provinsi: "Jawa Barat", kotaKab: "Kab. Cirebon", strata: "Swasta_AB" },
++  { id: 70, nama: "RS Islam GM Sultan Agung", kelas: "B", kepemilikan: "Swasta", provinsi: "Jawa Tengah", kotaKab: "Kota Semarang", strata: "Swasta_AB" },
++  { id: 71, nama: "RS PKU Muhammadiyah Gamping", kelas: "B", kepemilikan: "Swasta", provinsi: "DI Yogyakarta", kotaKab: "Kab. Sleman", strata: "Swasta_AB" },
++  { id: 72, nama: "RS Islam Surabaya", kelas: "B", kepemilikan: "Swasta", provinsi: "Jawa Timur", kotaKab: "Kota Surabaya", strata: "Swasta_AB" },
++  { id: 73, nama: "RS Mitra Keluarga Waru Sidoarjo", kelas: "B", kepemilikan: "Swasta", provinsi: "Jawa Timur", kotaKab: "Kab. Sidoarjo", strata: "Swasta_AB" },
++  { id: 74, nama: "RS Eka", kelas: "B", kepemilikan: "Swasta", provinsi: "Banten", kotaKab: "Kota Tangerang Selatan", strata: "Swasta_AB" },
++  { id: 75, nama: "RS Omni Tangerang", kelas: "B", kepemilikan: "Swasta", provinsi: "Banten", kotaKab: "Kab. Tangerang", strata: "Swasta_AB" },
++  { id: 76, nama: "RSIA Annisa Payakumbuh", kelas: "C", kepemilikan: "Swasta", provinsi: "Sumatera Barat", kotaKab: "Kota Payakumbuh", strata: "Swasta_C" },
++  { id: 77, nama: "RSIA Bunda Padang", kelas: "C", kepemilikan: "Swasta", provinsi: "Sumatera Barat", kotaKab: "Kota Padang", strata: "Swasta_C" },
++  { id: 78, nama: "RSIA Permata Bunda Solok", kelas: "C", kepemilikan: "Swasta", provinsi: "Sumatera Barat", kotaKab: "Kota Solok", strata: "Swasta_C" },
++  { id: 79, nama: "RSIA Sayang Ibu", kelas: "C", kepemilikan: "Swasta", provinsi: "Sumatera Barat", kotaKab: "Kab. Tanah Datar", strata: "Swasta_C" },
++  { id: 80, nama: "RSIA Siti Hawa", kelas: "C", kepemilikan: "Swasta", provinsi: "Sumatera Barat", kotaKab: "Kota Padang", strata: "Swasta_C" },
++  { id: 81, nama: "RSIA Sukma Bunda", kelas: "C", kepemilikan: "Swasta", provinsi: "Sumatera Barat", kotaKab: "Kota Payakumbuh", strata: "Swasta_C" },
++  { id: 82, nama: "RSU Aisyiyah Padang", kelas: "C", kepemilikan: "Swasta", provinsi: "Sumatera Barat", kotaKab: "Kota Padang", strata: "Swasta_C" },
++  { id: 83, nama: "RSU Citra Bunda Medical Center Padang", kelas: "C", kepemilikan: "Swasta", provinsi: "Sumatera Barat", kotaKab: "Kota Padang", strata: "Swasta_C" },
++  { id: 84, nama: "RS Mediros", kelas: "C", kepemilikan: "Swasta", provinsi: "DKI Jakarta", kotaKab: "Jakarta Timur", strata: "Swasta_C" },
++  { id: 85, nama: "RSIA Andhika", kelas: "C", kepemilikan: "Swasta", provinsi: "DKI Jakarta", kotaKab: "Jakarta Selatan", strata: "Swasta_C" },
++  { id: 86, nama: "RS Amanda Cikarang Selatan", kelas: "C", kepemilikan: "Swasta", provinsi: "Jawa Barat", kotaKab: "Kab. Bekasi", strata: "Swasta_C" },
++  { id: 87, nama: "RS Bunda Margonda", kelas: "C", kepemilikan: "Swasta", provinsi: "Jawa Barat", kotaKab: "Kab. Bogor", strata: "Swasta_C" },
++  { id: 88, nama: "RS Jantung Diagram", kelas: "C", kepemilikan: "Swasta", provinsi: "Jawa Barat", kotaKab: "Kota Depok", strata: "Swasta_C" },
++  { id: 89, nama: "RS Mitra Kasih", kelas: "C", kepemilikan: "Swasta", provinsi: "Jawa Barat", kotaKab: "Kab. Bandung", strata: "Swasta_C" },
++  { id: 90, nama: "RS Santo Yusup", kelas: "C", kepemilikan: "Swasta", provinsi: "Jawa Barat", kotaKab: "Kota Bandung", strata: "Swasta_C" },
++  { id: 91, nama: "RSIA Bunda Suryatni", kelas: "C", kepemilikan: "Swasta", provinsi: "Jawa Barat", kotaKab: "Kab. Bogor", strata: "Swasta_C" },
++  { id: 92, nama: "RS PKU Muhammadiyah Gombong", kelas: "C", kepemilikan: "Swasta", provinsi: "Jawa Tengah", kotaKab: "Kab. Kebumen", strata: "Swasta_C" },
++  { id: 93, nama: "RS Sarila Husada Sragen", kelas: "C", kepemilikan: "Swasta", provinsi: "Jawa Tengah", kotaKab: "Kab. Sragen", strata: "Swasta_C" },
++  { id: 94, nama: "RSIA Kasih Ibu Tegal", kelas: "C", kepemilikan: "Swasta", provinsi: "Jawa Tengah", kotaKab: "Kota Tegal", strata: "Swasta_C" },
++  { id: 95, nama: "RS Panti Rahayu Gunungkidul", kelas: "C", kepemilikan: "Swasta", provinsi: "DI Yogyakarta", kotaKab: "Kab. Gunungkidul", strata: "Swasta_C" },
++  { id: 96, nama: "RS Islam Jombang", kelas: "C", kepemilikan: "Swasta", provinsi: "Jawa Timur", kotaKab: "Kab. Jombang", strata: "Swasta_C" },
++  { id: 97, nama: "RSIA Putri Surabaya", kelas: "C", kepemilikan: "Swasta", provinsi: "Jawa Timur", kotaKab: "Kota Surabaya", strata: "Swasta_C" },
++  { id: 98, nama: "RS Islam Sari Asih Ar-rahmah", kelas: "C", kepemilikan: "Swasta", provinsi: "Banten", kotaKab: "Kota Tangerang", strata: "Swasta_C" },
++  { id: 99, nama: "RSIA Mutiara Bunda Tangerang", kelas: "C", kepemilikan: "Swasta", provinsi: "Banten", kotaKab: "Kota Tangerang", strata: "Swasta_C" },
++  { id: 100, nama: "RSIA Vitalaya", kelas: "C", kepemilikan: "Swasta", provinsi: "Banten", kotaKab: "Kota Tangerang Selatan", strata: "Swasta_C" },
++];
++
++export const PROVINSI_LIST = [
++  "Sumatera Barat",
++  "DKI Jakarta",
++  "Jawa Barat",
++  "Jawa Tengah",
++  "DI Yogyakarta",
++  "Jawa Timur",
++  "Banten",
++] as const;
++
++export function getWilayahFromProvinsi(provinsi: string): string {
++  if (provinsi === "Sumatera Barat") return "Sumatera";
++  if (["DKI Jakarta", "Jawa Barat", "Jawa Tengah", "DI Yogyakarta", "Jawa Timur", "Banten"].includes(provinsi)) return "Jawa";
++  return "";
++}
++
++export function filterHospitals(
++  jenisRS?: string,
++  kelasRS?: string,
++  provinsi?: string
++): Hospital[] {
++  return HOSPITALS.filter((h) => {
++    if (jenisRS) {
++      const kep = jenisRS.includes("Publik") ? "Publik" : "Swasta";
++      if (h.kepemilikan !== kep) return false;
++    }
++    if (kelasRS) {
++      const k = kelasRS.replace("Kelas ", "");
++      if (h.kelas !== k) return false;
++    }
++    if (provinsi && h.provinsi !== provinsi) return false;
++    return true;
++  });
++}
+diff --git a/src/lib/questions.ts b/src/lib/questions.ts
+index 5cfbc63..69ba4a7 100644
+--- a/src/lib/questions.ts
++++ b/src/lib/questions.ts
+@@ -63,6 +63,19 @@ export const DEMOGRAPHICS: Record<string, DemographicOption> = {
+     label: "Kelas Rumah Sakit",
+     options: ["Kelas A", "Kelas B", "Kelas C"],
+   },
++  provinsiDetail: {
++    label: "Provinsi Lokasi Rumah Sakit",
++    options: [
++      "Sumatera Barat",
++      "DKI Jakarta",
++      "Jawa Barat",
++      "Jawa Tengah",
++      "DI Yogyakarta",
++      "Jawa Timur",
++      "Banten",
++      "Lainnya",
++    ],
++  },
+   wilayah: {
+     label: "Wilayah / Pulau",
+     options: [
+diff --git a/src/lib/schemas.ts b/src/lib/schemas.ts
+index 2f1df28..d9f2a47 100644
+--- a/src/lib/schemas.ts
++++ b/src/lib/schemas.ts
+@@ -11,6 +11,9 @@ const likertValue = z.coerce
+ export const demographicsSchema = z.object({
+   jenisRS: requiredField,
+   kelasRS: requiredField,
++  provinsiDetail: requiredField,
++  namaRS: z.string().optional().default(""),
++  hospitalId: z.coerce.number().optional(),
+   wilayah: requiredField,
+   profesi: requiredField,
+   pengalaman: requiredField,
+diff --git a/src/lib/types.ts b/src/lib/types.ts
+index d08644d..bab0689 100644
+--- a/src/lib/types.ts
++++ b/src/lib/types.ts
+@@ -1,6 +1,9 @@
+ export interface DemographicsData {
+   jenisRS: string;
+   kelasRS: string;
++  provinsiDetail: string;
++  namaRS: string;
++  hospitalId?: number;
+   wilayah: string;
+   profesi: string;
+   pengalaman: string;
+diff --git a/src/middleware.ts b/src/middleware.ts
+new file mode 100644
+index 0000000..11635a4
+--- /dev/null
++++ b/src/middleware.ts
+@@ -0,0 +1,21 @@
++import { NextRequest, NextResponse } from "next/server";
++
++export function middleware(request: NextRequest) {
++  const { pathname } = request.nextUrl;
++
++  // Only protect /dashboard routes (except /dashboard/login)
++  if (pathname.startsWith("/dashboard") && pathname !== "/dashboard/login") {
++    const authCookie = request.cookies.get("dashboard_auth");
++
++    if (authCookie?.value !== process.env.DASHBOARD_PASSWORD) {
++      const loginUrl = new URL("/dashboard/login", request.url);
++      return NextResponse.redirect(loginUrl);
++    }
++  }
++
++  return NextResponse.next();
++}
++
++export const config = {
++  matcher: ["/dashboard/:path*"],
++};
+diff --git a/supabase-migration-v2.sql b/supabase-migration-v2.sql
+new file mode 100644
+index 0000000..710c344
+--- /dev/null
++++ b/supabase-migration-v2.sql
+@@ -0,0 +1,146 @@
++-- Migration V2: Add hospitals table, quota targets, and new response columns
++
++-- 1. Hospitals reference table
++CREATE TABLE IF NOT EXISTS hospitals (
++  id SERIAL PRIMARY KEY,
++  nama TEXT NOT NULL,
++  kelas TEXT NOT NULL CHECK (kelas IN ('A', 'B', 'C')),
++  kepemilikan TEXT NOT NULL CHECK (kepemilikan IN ('Publik', 'Swasta')),
++  provinsi TEXT NOT NULL,
++  kota_kab TEXT NOT NULL,
++  strata TEXT NOT NULL,
++  target_responden SMALLINT NOT NULL DEFAULT 3
++);
++
++ALTER TABLE hospitals ENABLE ROW LEVEL SECURITY;
++CREATE POLICY "Public can read hospitals" ON hospitals FOR SELECT USING (true);
++CREATE POLICY "Service role can manage hospitals" ON hospitals FOR ALL TO service_role USING (true) WITH CHECK (true);
++
++-- 2. Insert 100 RS terpilih
++INSERT INTO hospitals (id, nama, kelas, kepemilikan, provinsi, kota_kab, strata) VALUES
++  (1, 'RS Jiwa Prof. Dr. HB Saanin', 'A', 'Publik', 'Sumatera Barat', 'Kota Padang', 'Publik_A'),
++  (2, 'RSUP Dr. M. Djamil', 'A', 'Publik', 'Sumatera Barat', 'Kota Padang', 'Publik_A'),
++  (3, 'RS Jantung dan Pembuluh Darah Harapan Kita', 'A', 'Publik', 'DKI Jakarta', 'Jakarta Barat', 'Publik_A'),
++  (4, 'RSUD Tarakan', 'A', 'Publik', 'DKI Jakarta', 'Jakarta Pusat', 'Publik_A'),
++  (5, 'RS Jiwa Provinsi Jawa Barat', 'A', 'Publik', 'Jawa Barat', 'Kab. Bandung Barat', 'Publik_A'),
++  (6, 'RS Jiwa dr. H. Marzoeki Mahdi', 'A', 'Publik', 'Jawa Barat', 'Kota Bogor', 'Publik_A'),
++  (7, 'RS Jiwa Daerah Dr. Amino Gondohutomo', 'A', 'Publik', 'Jawa Tengah', 'Kota Semarang', 'Publik_A'),
++  (8, 'RS Jiwa Daerah Dr. RM. Soedjarwadi', 'A', 'Publik', 'Jawa Tengah', 'Kab. Klaten', 'Publik_A'),
++  (9, 'RS Jiwa Grhasia', 'A', 'Publik', 'DI Yogyakarta', 'Kab. Sleman', 'Publik_A'),
++  (10, 'RS Jiwa Dr. Radjiman Wediodiningrat Lawang', 'A', 'Publik', 'Jawa Timur', 'Kab. Malang', 'Publik_A'),
++  (11, 'RS Paru Sumatera Barat', 'B', 'Publik', 'Sumatera Barat', 'Kab. Padang Pariaman', 'Publik_B'),
++  (12, 'RS Stroke Nasional', 'B', 'Publik', 'Sumatera Barat', 'Kota Bukittinggi', 'Publik_B'),
++  (13, 'RS. Universitas Andalas', 'B', 'Publik', 'Sumatera Barat', 'Kota Padang', 'Publik_B'),
++  (14, 'RSUD Dr. Achmad Mochtar', 'B', 'Publik', 'Sumatera Barat', 'Kota Bukittinggi', 'Publik_B'),
++  (15, 'RSUD Mohammad Natsir', 'B', 'Publik', 'Sumatera Barat', 'Kota Solok', 'Publik_B'),
++  (16, 'RSUD Pariaman', 'B', 'Publik', 'Sumatera Barat', 'Kab. Padang Pariaman', 'Publik_B'),
++  (17, 'RS Dharma Jaya', 'B', 'Publik', 'DKI Jakarta', 'Jakarta Pusat', 'Publik_B'),
++  (18, 'RS Ketergantungan Obat', 'B', 'Publik', 'DKI Jakarta', 'Jakarta Timur', 'Publik_B'),
++  (19, 'RS Ridwan Meuraksa', 'B', 'Publik', 'DKI Jakarta', 'Jakarta Timur', 'Publik_B'),
++  (20, 'RS Bhayangkara Tk II Sartika Asih', 'B', 'Publik', 'Jawa Barat', 'Kota Bandung', 'Publik_B'),
++  (21, 'RS Lanud dr. M. Salamun', 'B', 'Publik', 'Jawa Barat', 'Kota Bandung', 'Publik_B'),
++  (22, 'RS Universitas Indonesia', 'B', 'Publik', 'Jawa Barat', 'Kab. Bogor', 'Publik_B'),
++  (23, 'RSUD R Syamsudin SH', 'B', 'Publik', 'Jawa Barat', 'Kota Sukabumi', 'Publik_B'),
++  (24, 'RSUD Waled', 'B', 'Publik', 'Jawa Barat', 'Kab. Cirebon', 'Publik_B'),
++  (25, 'RSK GM Univ. Jenderal Soedirman', 'B', 'Publik', 'Jawa Tengah', 'Kab. Banyumas', 'Publik_B'),
++  (26, 'RSUD Banyumas', 'B', 'Publik', 'Jawa Tengah', 'Kab. Banyumas', 'Publik_B'),
++  (27, 'RSUD Dr. R.Soedjati Soemodiardjo', 'B', 'Publik', 'Jawa Tengah', 'Kab. Grobogan', 'Publik_B'),
++  (28, 'RSUD RAA Soewondo Pati', 'B', 'Publik', 'Jawa Tengah', 'Kab. Pati', 'Publik_B'),
++  (29, 'RS GM UGM Prof. Soedomo', 'B', 'Publik', 'DI Yogyakarta', 'Kota Yogyakarta', 'Publik_B'),
++  (30, 'RS Haji Surabaya', 'B', 'Publik', 'Jawa Timur', 'Kota Surabaya', 'Publik_B'),
++  (31, 'RS Universitas Airlangga', 'B', 'Publik', 'Jawa Timur', 'Kota Surabaya', 'Publik_B'),
++  (32, 'RSUD Dr. R. Koesma Tuban', 'B', 'Publik', 'Jawa Timur', 'Kab. Tuban', 'Publik_B'),
++  (33, 'RSUD Dr. Soegiri Lamongan', 'B', 'Publik', 'Jawa Timur', 'Kab. Lamongan', 'Publik_B'),
++  (34, 'RSUD dr. Mohamad Soewandhie', 'B', 'Publik', 'Jawa Timur', 'Kota Surabaya', 'Publik_B'),
++  (35, 'RSUD Kabupaten Tangerang', 'B', 'Publik', 'Banten', 'Kab. Tangerang', 'Publik_B'),
++  (36, 'RSUD Arosuka Solok', 'C', 'Publik', 'Sumatera Barat', 'Kab. Solok', 'Publik_C'),
++  (37, 'RSUD Dr Adnaan WD', 'C', 'Publik', 'Sumatera Barat', 'Kota Payakumbuh', 'Publik_C'),
++  (38, 'RSUD Lubuk Basung', 'C', 'Publik', 'Sumatera Barat', 'Kab. Lima Puluh Kota', 'Publik_C'),
++  (39, 'RSUD Padang Pariaman', 'C', 'Publik', 'Sumatera Barat', 'Kab. Padang Pariaman', 'Publik_C'),
++  (40, 'RSUD Pasaman Barat', 'C', 'Publik', 'Sumatera Barat', 'Kab. Pasaman Barat', 'Publik_C'),
++  (41, 'RSUD Prof Dr M.A Hanafiah', 'C', 'Publik', 'Sumatera Barat', 'Kab. Tanah Datar', 'Publik_C'),
++  (42, 'RSUD Sawah Lunto', 'C', 'Publik', 'Sumatera Barat', 'Kota Sawahlunto', 'Publik_C'),
++  (43, 'RSUD dr. Rasidin Padang', 'C', 'Publik', 'Sumatera Barat', 'Kota Padang', 'Publik_C'),
++  (44, 'RS Antam Medika', 'C', 'Publik', 'DKI Jakarta', 'Jakarta Timur', 'Publik_C'),
++  (45, 'RS Bhayangkara Brimob', 'C', 'Publik', 'Jawa Barat', 'Kota Depok', 'Publik_C'),
++  (46, 'RSUD Jampang Kulon', 'C', 'Publik', 'Jawa Barat', 'Kab. Sukabumi', 'Publik_C'),
++  (47, 'RSUD Majalengka', 'C', 'Publik', 'Jawa Barat', 'Kab. Majalengka', 'Publik_C'),
++  (48, 'RSUD Bung Karno Kota Surakarta', 'C', 'Publik', 'Jawa Tengah', 'Kota Surakarta', 'Publik_C'),
++  (49, 'RSUD Kab. Batang', 'C', 'Publik', 'Jawa Tengah', 'Kab. Batang', 'Publik_C'),
++  (50, 'RSUD Kajen Kab. Pekalongan', 'C', 'Publik', 'Jawa Tengah', 'Kab. Pekalongan', 'Publik_C'),
++  (51, 'RSUD Karanganyar', 'C', 'Publik', 'Jawa Tengah', 'Kab. Karanganyar', 'Publik_C'),
++  (52, 'RSUD Kayen Pati', 'C', 'Publik', 'Jawa Tengah', 'Kab. Pati', 'Publik_C'),
++  (53, 'RSUD Majenang', 'C', 'Publik', 'Jawa Tengah', 'Kab. Cilacap', 'Publik_C'),
++  (54, 'RSUD Wonosari', 'C', 'Publik', 'DI Yogyakarta', 'Kab. Gunungkidul', 'Publik_C'),
++  (55, 'RS Semen Gresik', 'C', 'Publik', 'Jawa Timur', 'Kab. Gresik', 'Publik_C'),
++  (56, 'RS Tk III Dr Soedono Madiun', 'C', 'Publik', 'Jawa Timur', 'Kota Madiun', 'Publik_C'),
++  (57, 'RS Universitas Brawijaya Malang', 'C', 'Publik', 'Jawa Timur', 'Kota Malang', 'Publik_C'),
++  (58, 'RSUD Bhakti Dharma Husada', 'C', 'Publik', 'Jawa Timur', 'Kota Surabaya', 'Publik_C'),
++  (59, 'RSUD Waluyo Jati Kraksaan', 'C', 'Publik', 'Jawa Timur', 'Kab. Probolinggo', 'Publik_C'),
++  (60, 'RS Daan Mogot', 'C', 'Publik', 'Banten', 'Kota Tangerang', 'Publik_C'),
++  (61, 'RS Khusus Gigi dan Mulut Baiturrahmah', 'B', 'Swasta', 'Sumatera Barat', 'Kota Padang', 'Swasta_AB'),
++  (62, 'RS MMC Jakarta', 'B', 'Swasta', 'DKI Jakarta', 'Jakarta Selatan', 'Swasta_AB'),
++  (63, 'RS Mayapada Jakarta', 'B', 'Swasta', 'DKI Jakarta', 'Jakarta Selatan', 'Swasta_AB'),
++  (64, 'RS Medistra', 'B', 'Swasta', 'DKI Jakarta', 'Jakarta Selatan', 'Swasta_AB'),
++  (65, 'RS Siloam Asri', 'B', 'Swasta', 'DKI Jakarta', 'Jakarta Selatan', 'Swasta_AB'),
++  (66, 'RS Eka Bekasi', 'B', 'Swasta', 'Jawa Barat', 'Kab. Bekasi', 'Swasta_AB'),
++  (67, 'RS GM Pendidikan Unjani', 'B', 'Swasta', 'Jawa Barat', 'Kota Cimahi', 'Swasta_AB'),
++  (68, 'RS Mitra Keluarga Cikarang', 'B', 'Swasta', 'Jawa Barat', 'Kab. Bekasi', 'Swasta_AB'),
++  (69, 'RS Sumber Waras Cirebon', 'B', 'Swasta', 'Jawa Barat', 'Kab. Cirebon', 'Swasta_AB'),
++  (70, 'RS Islam GM Sultan Agung', 'B', 'Swasta', 'Jawa Tengah', 'Kota Semarang', 'Swasta_AB'),
++  (71, 'RS PKU Muhammadiyah Gamping', 'B', 'Swasta', 'DI Yogyakarta', 'Kab. Sleman', 'Swasta_AB'),
++  (72, 'RS Islam Surabaya', 'B', 'Swasta', 'Jawa Timur', 'Kota Surabaya', 'Swasta_AB'),
++  (73, 'RS Mitra Keluarga Waru Sidoarjo', 'B', 'Swasta', 'Jawa Timur', 'Kab. Sidoarjo', 'Swasta_AB'),
++  (74, 'RS Eka', 'B', 'Swasta', 'Banten', 'Kota Tangerang Selatan', 'Swasta_AB'),
++  (75, 'RS Omni Tangerang', 'B', 'Swasta', 'Banten', 'Kab. Tangerang', 'Swasta_AB'),
++  (76, 'RSIA Annisa Payakumbuh', 'C', 'Swasta', 'Sumatera Barat', 'Kota Payakumbuh', 'Swasta_C'),
++  (77, 'RSIA Bunda Padang', 'C', 'Swasta', 'Sumatera Barat', 'Kota Padang', 'Swasta_C'),
++  (78, 'RSIA Permata Bunda Solok', 'C', 'Swasta', 'Sumatera Barat', 'Kota Solok', 'Swasta_C'),
++  (79, 'RSIA Sayang Ibu', 'C', 'Swasta', 'Sumatera Barat', 'Kab. Tanah Datar', 'Swasta_C'),
++  (80, 'RSIA Siti Hawa', 'C', 'Swasta', 'Sumatera Barat', 'Kota Padang', 'Swasta_C'),
++  (81, 'RSIA Sukma Bunda', 'C', 'Swasta', 'Sumatera Barat', 'Kota Payakumbuh', 'Swasta_C'),
++  (82, 'RSU Aisyiyah Padang', 'C', 'Swasta', 'Sumatera Barat', 'Kota Padang', 'Swasta_C'),
++  (83, 'RSU Citra Bunda Medical Center Padang', 'C', 'Swasta', 'Sumatera Barat', 'Kota Padang', 'Swasta_C'),
++  (84, 'RS Mediros', 'C', 'Swasta', 'DKI Jakarta', 'Jakarta Timur', 'Swasta_C'),
++  (85, 'RSIA Andhika', 'C', 'Swasta', 'DKI Jakarta', 'Jakarta Selatan', 'Swasta_C'),
++  (86, 'RS Amanda Cikarang Selatan', 'C', 'Swasta', 'Jawa Barat', 'Kab. Bekasi', 'Swasta_C'),
++  (87, 'RS Bunda Margonda', 'C', 'Swasta', 'Jawa Barat', 'Kab. Bogor', 'Swasta_C'),
++  (88, 'RS Jantung Diagram', 'C', 'Swasta', 'Jawa Barat', 'Kota Depok', 'Swasta_C'),
++  (89, 'RS Mitra Kasih', 'C', 'Swasta', 'Jawa Barat', 'Kab. Bandung', 'Swasta_C'),
++  (90, 'RS Santo Yusup', 'C', 'Swasta', 'Jawa Barat', 'Kota Bandung', 'Swasta_C'),
++  (91, 'RSIA Bunda Suryatni', 'C', 'Swasta', 'Jawa Barat', 'Kab. Bogor', 'Swasta_C'),
++  (92, 'RS PKU Muhammadiyah Gombong', 'C', 'Swasta', 'Jawa Tengah', 'Kab. Kebumen', 'Swasta_C'),
++  (93, 'RS Sarila Husada Sragen', 'C', 'Swasta', 'Jawa Tengah', 'Kab. Sragen', 'Swasta_C'),
++  (94, 'RSIA Kasih Ibu Tegal', 'C', 'Swasta', 'Jawa Tengah', 'Kota Tegal', 'Swasta_C'),
++  (95, 'RS Panti Rahayu Gunungkidul', 'C', 'Swasta', 'DI Yogyakarta', 'Kab. Gunungkidul', 'Swasta_C'),
++  (96, 'RS Islam Jombang', 'C', 'Swasta', 'Jawa Timur', 'Kab. Jombang', 'Swasta_C'),
++  (97, 'RSIA Putri Surabaya', 'C', 'Swasta', 'Jawa Timur', 'Kota Surabaya', 'Swasta_C'),
++  (98, 'RS Islam Sari Asih Ar-rahmah', 'C', 'Swasta', 'Banten', 'Kota Tangerang', 'Swasta_C'),
++  (99, 'RSIA Mutiara Bunda Tangerang', 'C', 'Swasta', 'Banten', 'Kota Tangerang', 'Swasta_C'),
++  (100, 'RSIA Vitalaya', 'C', 'Swasta', 'Banten', 'Kota Tangerang Selatan', 'Swasta_C');
++
++-- 3. Quota targets table
++CREATE TABLE IF NOT EXISTS quota_targets (
++  id SERIAL PRIMARY KEY,
++  strata TEXT NOT NULL UNIQUE,
++  label TEXT NOT NULL,
++  target_responden SMALLINT NOT NULL
++);
++
++ALTER TABLE quota_targets ENABLE ROW LEVEL SECURITY;
++CREATE POLICY "Public can read quota" ON quota_targets FOR SELECT USING (true);
++
++INSERT INTO quota_targets (strata, label, target_responden) VALUES
++  ('Publik_A',  'RS Publik Kelas A',     30),
++  ('Publik_B',  'RS Publik Kelas B',     75),
++  ('Publik_C',  'RS Publik Kelas C',     75),
++  ('Swasta_AB', 'RS Swasta Kelas A & B', 45),
++  ('Swasta_C',  'RS Swasta Kelas C',     75);
++
++-- 4. Add new columns to responses
++ALTER TABLE responses ADD COLUMN IF NOT EXISTS provinsi TEXT;
++ALTER TABLE responses ADD COLUMN IF NOT EXISTS hospital_id INTEGER REFERENCES hospitals(id);
++ALTER TABLE responses ADD COLUMN IF NOT EXISTS nama_rs TEXT;
++
++CREATE INDEX IF NOT EXISTS idx_responses_hospital ON responses(hospital_id);
++CREATE INDEX IF NOT EXISTS idx_responses_provinsi ON responses(provinsi);
+-- 
+2.43.0
+

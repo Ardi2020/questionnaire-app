@@ -82,7 +82,7 @@ export function SurveyWizard() {
   );
 
   const handleDemographicChange = useCallback(
-    (field: string, value: string) => {
+    (field: string, value: string | number) => {
       updateFormData({ [field]: value } as PartialSurveyData);
       setErrors((prev) => ({ ...prev, [field]: undefined }));
     },

@@ -3,7 +3,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { DEMOGRAPHICS, SECTIONS, LIKERT_LABELS } from "@/lib/questions";
+import { SECTIONS, LIKERT_LABELS } from "@/lib/questions";
 import type { PartialSurveyData } from "@/lib/types";
 
 interface StepReviewProps {
@@ -16,10 +16,22 @@ interface StepReviewProps {
 const DEMO_FIELDS = [
   "jenisRS",
   "kelasRS",
+  "provinsiDetail",
+  "namaRS",
   "wilayah",
   "profesi",
   "pengalaman",
 ] as const;
+
+const DEMO_LABELS: Record<string, string> = {
+  jenisRS: "Jenis Rumah Sakit",
+  kelasRS: "Kelas Rumah Sakit",
+  provinsiDetail: "Provinsi",
+  namaRS: "Nama Rumah Sakit",
+  wilayah: "Wilayah / Pulau",
+  profesi: "Profesi / Jabatan",
+  pengalaman: "Pengalaman Kerja di RS Ini",
+};
 
 export function StepReview({
   formData,
@@ -56,7 +68,7 @@ export function StepReview({
             {DEMO_FIELDS.map((field) => (
               <div key={field} className="flex justify-between text-sm">
                 <span className="text-muted-foreground">
-                  {DEMOGRAPHICS[field].label}
+                  {DEMO_LABELS[field]}
                 </span>
                 <span className="font-medium text-foreground">
                   {(formData as Record<string, unknown>)[field] as string || "-"}
