@@ -1,0 +1,60 @@
+From 63497b77a051df4620b89e7872c96279663156e7 Mon Sep 17 00:00:00 2001
+From: Asmuliardi Muluk <asmuliardi@gmail.com>
+Date: Fri, 20 Feb 2026 14:52:35 +0000
+Subject: [PATCH] fix: improve error reporting for submit debugging
+
+---
+ src/app/api/submit/route.ts             | 10 ++++++++--
+ src/components/survey/survey-wizard.tsx |  6 +++++-
+ 2 files changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/src/app/api/submit/route.ts b/src/app/api/submit/route.ts
+index 857b73c..b202c7f 100644
+--- a/src/app/api/submit/route.ts
++++ b/src/app/api/submit/route.ts
+@@ -12,8 +12,12 @@ export async function POST(request: Request) {
+     // Validate with Zod
+     const result = fullSurveySchema.safeParse(body);
+     if (!result.success) {
++      console.error("Validation error:", JSON.stringify(result.error.flatten()));
+       return NextResponse.json(
+-        { error: "Data tidak valid", details: result.error.flatten() },
++        {
++          error: "Data tidak valid",
++          detail: JSON.stringify(result.error.flatten().fieldErrors),
++        },
+         { status: 400 }
+       );
+     }
+@@ -74,8 +78,10 @@ export async function POST(request: Request) {
+     return NextResponse.json({ success: true });
+   } catch (error) {
+     console.error("Submit error:", error);
++    const message =
++      error instanceof Error ? error.message : "Unknown error";
+     return NextResponse.json(
+-      { error: "Terjadi kesalahan server" },
++      { error: "Terjadi kesalahan server", detail: message },
+       { status: 500 }
+     );
+   }
+diff --git a/src/components/survey/survey-wizard.tsx b/src/components/survey/survey-wizard.tsx
+index a2ca75f..fb77149 100644
+--- a/src/components/survey/survey-wizard.tsx
++++ b/src/components/survey/survey-wizard.tsx
+@@ -108,7 +108,11 @@ export function SurveyWizard() {
+ 
+       if (!response.ok) {
+         const err = await response.json();
+-        throw new Error(err.error || "Gagal mengirim jawaban");
++        throw new Error(
++          err.detail
++            ? `${err.error}: ${err.detail}`
++            : err.error || "Gagal mengirim jawaban"
++        );
+       }
+ 
+       setSubmitted();
+-- 
+2.43.0
+
