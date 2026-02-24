@@ -36,6 +36,12 @@ interface HospitalStat {
   status: "complete" | "partial" | "empty";
 }
 
+interface NonTargetRS {
+  nama: string;
+  provinsi: string;
+  count: number;
+}
+
 interface DashboardData {
   totalResponses: number;
   target: number;
@@ -44,6 +50,7 @@ interface DashboardData {
   provinsiStats: ProvinsiStat[];
   profesiStats: ProfesiStat[];
   hospitalStats: HospitalStat[];
+  nonTargetRS: NonTargetRS[];
 }
 
 function ProgressBar({ current, target, className = "" }: { current: number; target: number; className?: string }) {
@@ -441,6 +448,29 @@ export default function DashboardPage() {
             Menampilkan {filteredHospitals.length} dari {data.hospitalStats.length} RS
           </div>
         </div>
+
+        {/* Non-Target RS */}
+        {data.nonTargetRS.length > 0 && (
+          <div className="bg-white rounded-xl border border-gray-200 p-6">
+            <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-1">
+              Responden dari RS Lainnya
+            </h2>
+            <p className="text-xs text-gray-400 mb-4">
+              RS di luar 100 RS target — {data.nonTargetRS.reduce((sum, r) => sum + r.count, 0)} responden dari {data.nonTargetRS.length} RS
+            </p>
+            <div className="space-y-2">
+              {data.nonTargetRS.map((rs, i) => (
+                <div key={i} className="flex items-center justify-between text-sm py-1.5 border-b border-gray-50 last:border-0">
+                  <div>
+                    <span className="font-medium text-gray-900">{rs.nama}</span>
+                    <span className="text-xs text-gray-400 ml-2">{rs.provinsi}</span>
+                  </div>
+                  <span className="font-mono text-gray-600">{rs.count} resp</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         </>
         )}
       </div>

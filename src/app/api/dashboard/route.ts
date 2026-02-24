@@ -163,6 +163,23 @@ export async function GET(request: NextRequest) {
       };
     });
 
+    // Non-target RS (hospital_id is null but nama_rs exists)
+    const nonTargetMap: Record<string, { nama: string; provinsi: string; count: number }> = {};
+    allResponses.forEach((r) => {
+      if (!r.hospital_id && r.nama_rs) {
+        const key = r.nama_rs.trim().toLowerCase();
+        if (!nonTargetMap[key]) {
+          nonTargetMap[key] = {
+            nama: r.nama_rs.trim(),
+            provinsi: r.provinsi || "Tidak diketahui",
+            count: 0,
+          };
+        }
+        nonTargetMap[key].count += 1;
+      }
+    });
+    const nonTargetRS = Object.values(nonTargetMap).sort((a, b) => b.count - a.count);
+
     return NextResponse.json({
       totalResponses: total,
       target: 300,
@@ -171,6 +188,7 @@ export async function GET(request: NextRequest) {
       provinsiStats,
       profesiStats,
       hospitalStats,
+      nonTargetRS,
     });
   } catch (err) {
     console.error("Dashboard error:", err);
