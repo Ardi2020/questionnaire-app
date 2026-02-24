@@ -123,6 +123,11 @@ export function StepWelcome({ onNext }: StepWelcomeProps) {
         </CardContent>
       </Card>
 
+      {/* Contact info */}
+      <div className="text-center text-xs text-muted-foreground space-y-0.5">
+        <p>Pertanyaan? Hubungi: <a href="mailto:asmuliardi@gmail.com" className="text-primary hover:underline">asmuliardi@gmail.com</a> | <a href="https://wa.me/6281268770213" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">WA 0812-6877-0213</a></p>
+      </div>
+
       {/* Start button */}
       <div className="flex justify-center pt-2">
         <Button size="lg" onClick={onNext} className="w-full sm:w-auto px-12">

@@ -1,9 +1,18 @@
 "use client";
 
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { RESEARCHER_INFO } from "@/lib/questions";
+import { useSurveyStore } from "@/lib/store";
 
 export function StepThankYou() {
+  const reset = useSurveyStore((s) => s.reset);
+
+  const handleNewResponse = () => {
+    reset();
+    window.location.reload();
+  };
+
   return (
     <div className="space-y-6">
       <div className="text-center space-y-4">
@@ -47,9 +56,42 @@ export function StepThankYou() {
             <p className="text-xs text-muted-foreground">
               {RESEARCHER_INFO.university}
             </p>
+            <div className="pt-2 space-y-1">
+              <p className="text-xs text-muted-foreground">
+                ✉️{" "}
+                <a
+                  href="mailto:asmuliardi@gmail.com"
+                  className="text-primary hover:underline"
+                >
+                  asmuliardi@gmail.com
+                </a>
+              </p>
+              <p className="text-xs text-muted-foreground">
+                💬{" "}
+                <a
+                  href="https://wa.me/6281268770213"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary hover:underline"
+                >
+                  0812-6877-0213 (WhatsApp)
+                </a>
+              </p>
+            </div>
           </div>
         </CardContent>
       </Card>
+
+      {/* Reset / New Response button */}
+      <div className="flex justify-center pt-2">
+        <Button
+          variant="outline"
+          onClick={handleNewResponse}
+          className="px-8"
+        >
+          ↻ Isi Kuesioner untuk Responden Lain
+        </Button>
+      </div>
     </div>
   );
 }

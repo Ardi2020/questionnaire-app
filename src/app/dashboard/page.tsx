@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { AnalyticsPanel } from "@/components/dashboard/analytics-panel";
 
 interface StrataQuota {
   strata: string;
@@ -86,6 +87,9 @@ export default function DashboardPage() {
   const [rsFilter, setRsFilter] = useState<"all" | "complete" | "partial" | "empty">("all");
   const [rsSearch, setRsSearch] = useState("");
   const [strataFilter, setStrataFilter] = useState("all");
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [activeTab, setActiveTab] = useState<"monitoring" | "analytics">("monitoring");
 
   const fetchData = useCallback(async () => {
     try {
@@ -125,6 +129,33 @@ export default function DashboardPage() {
       URL.revokeObjectURL(url);
     } catch {
       alert("Gagal mengunduh CSV");
+    }
+  };
+
+  const handleReset = async (exportFirst: boolean) => {
+    setResetting(true);
+    try {
+      // Export first if requested
+      if (exportFirst) {
+        await handleExport();
+        // Small delay to ensure download starts
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+
+      const res = await fetch("/api/dashboard/reset", { method: "DELETE" });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || err.error || "Gagal reset");
+      }
+
+      const result = await res.json();
+      alert(`✓ ${result.message}`);
+      setShowResetModal(false);
+      fetchData(); // Refresh dashboard
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Gagal mereset data");
+    } finally {
+      setResetting(false);
     }
   };
 
@@ -187,12 +218,47 @@ export default function DashboardPage() {
               >
                 ↓ Export CSV
               </button>
+              <button
+                onClick={() => setShowResetModal(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 bg-white px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"
+              >
+                ⟲ Reset Data
+              </button>
             </div>
           </div>
         </div>
       </div>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
+        {/* Tab Navigation */}
+        <div className="flex gap-1 bg-gray-100 rounded-lg p-1 w-fit">
+          <button
+            onClick={() => setActiveTab("monitoring")}
+            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+              activeTab === "monitoring"
+                ? "bg-white text-gray-900 shadow-sm"
+                : "text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            📊 Monitoring
+          </button>
+          <button
+            onClick={() => setActiveTab("analytics")}
+            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+              activeTab === "analytics"
+                ? "bg-white text-gray-900 shadow-sm"
+                : "text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            🔬 Analisis Data
+          </button>
+        </div>
+
+        {/* Tab Content */}
+        {activeTab === "analytics" ? (
+          <AnalyticsPanel />
+        ) : (
+        <>
         {/* Summary Cards */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="bg-white rounded-xl border border-gray-200 p-4">
@@ -375,7 +441,54 @@ export default function DashboardPage() {
             Menampilkan {filteredHospitals.length} dari {data.hospitalStats.length} RS
           </div>
         </div>
+        </>
+        )}
       </div>
+
+      {/* Reset Confirmation Modal */}
+      {showResetModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 p-6 space-y-4">
+            <div className="text-center">
+              <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-red-100 mb-3">
+                <span className="text-2xl">⚠️</span>
+              </div>
+              <h3 className="text-lg font-bold text-gray-900">Reset Semua Data?</h3>
+              <p className="text-sm text-gray-500 mt-2">
+                Tindakan ini akan <span className="font-semibold text-red-600">menghapus semua {data.totalResponses} respons</span> dari database secara permanen.
+              </p>
+            </div>
+
+            <div className="space-y-2 pt-2">
+              <button
+                onClick={() => handleReset(true)}
+                disabled={resetting}
+                className="w-full rounded-lg bg-amber-500 px-4 py-3 text-sm font-medium text-white hover:bg-amber-600 disabled:opacity-50 transition-colors"
+              >
+                {resetting ? "Memproses..." : "📥 Export CSV dulu, lalu Hapus Semua"}
+              </button>
+              <button
+                onClick={() => handleReset(false)}
+                disabled={resetting}
+                className="w-full rounded-lg bg-red-600 px-4 py-3 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50 transition-colors"
+              >
+                {resetting ? "Menghapus..." : "🗑️ Hapus Semua Tanpa Export"}
+              </button>
+              <button
+                onClick={() => setShowResetModal(false)}
+                disabled={resetting}
+                className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 transition-colors"
+              >
+                Batal
+              </button>
+            </div>
+
+            <p className="text-xs text-gray-400 text-center">
+              Data yang sudah dihapus tidak dapat dikembalikan.
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
