@@ -12,12 +12,8 @@ export async function POST(request: Request) {
     // Validate with Zod
     const result = fullSurveySchema.safeParse(body);
     if (!result.success) {
-      console.error("Validation error:", JSON.stringify(result.error.flatten()));
       return NextResponse.json(
-        {
-          error: "Data tidak valid",
-          detail: JSON.stringify(result.error.flatten().fieldErrors),
-        },
+        { error: "Data tidak valid", details: result.error.flatten() },
         { status: 400 }
       );
     }
@@ -78,10 +74,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("Submit error:", error);
-    const message =
-      error instanceof Error ? error.message : "Unknown error";
     return NextResponse.json(
-      { error: "Terjadi kesalahan server", detail: message },
+      { error: "Terjadi kesalahan server" },
       { status: 500 }
     );
   }

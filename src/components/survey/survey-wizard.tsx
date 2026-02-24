@@ -108,11 +108,7 @@ export function SurveyWizard() {
 
       if (!response.ok) {
         const err = await response.json();
-        throw new Error(
-          err.detail
-            ? `${err.error}: ${err.detail}`
-            : err.error || "Gagal mengirim jawaban"
-        );
+        throw new Error(err.error || "Gagal mengirim jawaban");
       }
 
       setSubmitted();
