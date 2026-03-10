@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/supabase";
+import { computeStrata } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
@@ -89,31 +90,110 @@ function cronbachAlpha(itemData: number[][]): number {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ResponseRow = Record<string, any>;
 
+interface OutlierDetail {
+  id: string;
+  type: string;
+  detail: string;
+  nama_rs: string;
+  strata: string;
+  profesi: string;
+  hospital_id: number | null;
+}
+
+interface HospitalListItem {
+  hospital_id: number;
+  nama_rs: string;
+  strata: string;
+  response_count: number;
+}
+
 export async function GET(request: NextRequest) {
   if (!checkAuth(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   try {
+    const { searchParams } = new URL(request.url);
+    const hospitalId = searchParams.get("hospital_id");
+
     const sql = getDb();
+
+    // Build WHERE clause for filtering excluded rows and optional hospital filter
+    let whereClause = "WHERE (excluded = false OR excluded IS NULL)";
+    const params: (string | number)[] = [];
+
+    if (hospitalId) {
+      whereClause += " AND hospital_id = " + Number(hospitalId);
+    }
+
     // Neon serverless requires explicit template literal - column names are safe (predefined constants)
-    const rows = await sql`
-      SELECT id, jenis_rs, kelas_rs,
-             ti1, ti2, ti3, ti4,
-             os1, os2, os3, os4,
-             dc1, dc2, dc3, dc4,
-             peou1, peou2, peou3, peou4,
-             pu1, pu2, pu3, pu4,
-             bi1, bi2, bi3,
-             read1, read2, read3, read4, read_g1
-      FROM responses
-      ORDER BY submitted_at ASC
-    ` as ResponseRow[];
+    // For filtered queries, we need to use a different approach with the neon serverless client
+    let rows: ResponseRow[];
+    let excludedCount = 0;
+
+    if (hospitalId) {
+      const hid = Number(hospitalId);
+      rows = await sql`
+        SELECT id, jenis_rs, kelas_rs, nama_rs, profesi, hospital_id,
+               ti1, ti2, ti3, ti4,
+               os1, os2, os3, os4,
+               dc1, dc2, dc3, dc4,
+               peou1, peou2, peou3, peou4,
+               pu1, pu2, pu3, pu4,
+               bi1, bi2, bi3,
+               read1, read2, read3, read4, read_g1
+        FROM responses
+        WHERE (excluded = false OR excluded IS NULL) AND hospital_id = ${hid}
+        ORDER BY submitted_at ASC
+      ` as ResponseRow[];
+    } else {
+      rows = await sql`
+        SELECT id, jenis_rs, kelas_rs, nama_rs, profesi, hospital_id,
+               ti1, ti2, ti3, ti4,
+               os1, os2, os3, os4,
+               dc1, dc2, dc3, dc4,
+               peou1, peou2, peou3, peou4,
+               pu1, pu2, pu3, pu4,
+               bi1, bi2, bi3,
+               read1, read2, read3, read4, read_g1
+        FROM responses
+        WHERE (excluded = false OR excluded IS NULL)
+        ORDER BY submitted_at ASC
+      ` as ResponseRow[];
+    }
+
+    // Get excluded count
+    const excludedRows = await sql`
+      SELECT COUNT(*) as count FROM responses WHERE excluded = true
+    ` as { count: bigint }[];
+    excludedCount = Number(excludedRows[0]?.count || 0);
+
+    // Get hospital list (only when not filtering by hospital)
+    let hospitalList: HospitalListItem[] = [];
+    if (!hospitalId) {
+      const hospitals = await sql`
+        SELECT hospital_id, nama_rs, jenis_rs, kelas_rs, COUNT(*) as response_count
+        FROM responses
+        WHERE (excluded = false OR excluded IS NULL) AND hospital_id IS NOT NULL
+        GROUP BY hospital_id, nama_rs, jenis_rs, kelas_rs
+        ORDER BY nama_rs
+      ` as { hospital_id: number; nama_rs: string; jenis_rs: string; kelas_rs: string; response_count: bigint }[];
+
+      hospitalList = hospitals.map((h) => ({
+        hospital_id: h.hospital_id,
+        nama_rs: h.nama_rs || "",
+        strata: computeStrata(h.jenis_rs, h.kelas_rs),
+        response_count: Number(h.response_count),
+      }));
+    }
+
     const n = rows.length;
 
     if (n === 0) {
       return NextResponse.json({
         n: 0,
+        excludedCount,
+        hospitalList,
         adequacy: { overall: false, message: "Belum ada data" },
         constructs: [],
         items: [],
@@ -165,6 +245,8 @@ export async function GET(request: NextRequest) {
         ? `Butuh ${300 - n} responden lagi (${n}/300)`
         : !allStrataAdequate
         ? "Total tercapai tapi ada strata yang belum memenuhi target"
+        : hospitalId
+        ? `Filtered: ${n} responses from hospital`
         : "✓ Semua syarat sample adequacy terpenuhi",
     };
 
@@ -250,20 +332,16 @@ export async function GET(request: NextRequest) {
       }
     });
 
-    // Outliers: respondents with extreme patterns
-    // Method: Mahalanobis-like — flag if total score is >3 SD from mean
-    // Simpler approach: flag straightliners (all same answer) and extreme total
-    const outliers: {
-      id: string;
-      type: string;
-      detail: string;
-    }[] = [];
+    // Outliers: respondents with extreme patterns - enriched with RS info
+    const outliers: OutlierDetail[] = [];
 
     rows.forEach((r) => {
       const allValues = ALL_ITEMS.map((item) => Number(r[item]) || 0);
       const validValues = allValues.filter((v) => v >= 1 && v <= 7);
 
       if (validValues.length === 0) return;
+
+      const strata = computeStrata(r.jenis_rs, r.kelas_rs);
 
       // Check straightlining (all same answer)
       const uniqueValues = new Set(validValues);
@@ -272,6 +350,10 @@ export async function GET(request: NextRequest) {
           id: r.id,
           type: "straightlining",
           detail: `Semua jawaban = ${validValues[0]}`,
+          nama_rs: r.nama_rs || "RS tidak diketahui",
+          strata,
+          profesi: r.profesi || "-",
+          hospital_id: r.hospital_id,
         });
         return;
       }
@@ -290,6 +372,10 @@ export async function GET(request: NextRequest) {
           id: r.id,
           type: "near-straightlining",
           detail: `${Math.round((maxFreq / validValues.length) * 100)}% jawaban = ${dominantVal}`,
+          nama_rs: r.nama_rs || "RS tidak diketahui",
+          strata,
+          profesi: r.profesi || "-",
+          hospital_id: r.hospital_id,
         });
         return;
       }
@@ -308,12 +394,18 @@ export async function GET(request: NextRequest) {
           id: r.id,
           type: "extreme-score",
           detail: `Total skor = ${totalScore} (mean=${Math.round(totalMean)}, 3σ=${Math.round(totalMean + 3 * totalSD)})`,
+          nama_rs: r.nama_rs || "RS tidak diketahui",
+          strata,
+          profesi: r.profesi || "-",
+          hospital_id: r.hospital_id,
         });
       }
     });
 
     return NextResponse.json({
       n,
+      excludedCount,
+      hospitalList: hospitalId ? [] : hospitalList,
       adequacy,
       constructs: constructStats,
       items: itemStats,
@@ -323,7 +415,7 @@ export async function GET(request: NextRequest) {
       },
       outliers: {
         count: outliers.length,
-        percentage: Math.round((outliers.length / n) * 100 * 10) / 10,
+        percentage: n > 0 ? Math.round((outliers.length / n) * 100 * 10) / 10 : 0,
         details: outliers,
       },
     });

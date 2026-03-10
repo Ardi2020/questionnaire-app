@@ -28,7 +28,9 @@ export async function GET(request: NextRequest) {
     const sql = getDb();
     const allResponses: Row[] = await sql`
       SELECT id, submitted_at, jenis_rs, kelas_rs, provinsi, hospital_id, nama_rs, profesi, wilayah
-      FROM responses ORDER BY submitted_at DESC
+      FROM responses
+      WHERE (excluded = false OR excluded IS NULL)
+      ORDER BY submitted_at DESC
     `;
 
     const total = allResponses.length;

@@ -46,19 +46,42 @@ interface ItemStat {
   lowVariance: boolean;
 }
 
-interface Outlier {
+interface OutlierDetail {
   id: string;
   type: string;
   detail: string;
+  nama_rs: string;
+  strata: string;
+  profesi: string;
+  hospital_id: number | null;
+}
+
+interface HospitalListItem {
+  hospital_id: number;
+  nama_rs: string;
+  strata: string;
+  response_count: number;
+}
+
+interface ExcludedResponse {
+  id: string;
+  nama_rs: string;
+  strata: string;
+  profesi: string;
+  excluded_reason: string;
+  excluded_at: string;
+  mean_score: number;
 }
 
 interface AnalyticsData {
   n: number;
+  excludedCount: number;
+  hospitalList: HospitalListItem[];
   adequacy: Adequacy;
   constructs: ConstructStat[];
   items: ItemStat[];
   missingData: { totalMissing: number; byItem: Record<string, number> };
-  outliers: { count: number; percentage: number; details: Outlier[] };
+  outliers: { count: number; percentage: number; details: OutlierDetail[] };
 }
 
 function Badge({ ok, label }: { ok: boolean; label: string }) {
@@ -109,9 +132,24 @@ export function AnalyticsPanel() {
   const [error, setError] = useState("");
   const [expandedConstruct, setExpandedConstruct] = useState<string | null>(null);
 
+  // Hospital filter states
+  const [hospitalFilter, setHospitalFilter] = useState<number | null>(null);
+  const [hospitalSearch, setHospitalSearch] = useState("");
+
+  // Excluded responses states
+  const [excludedData, setExcludedData] = useState<ExcludedResponse[]>([]);
+  const [excludedLoading, setExcludedLoading] = useState(false);
+
+  // Action states
+  const [excluding, setExcluding] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState<string | null>(null);
+
   const fetchAnalytics = useCallback(async () => {
     try {
-      const res = await fetch("/api/dashboard/analytics");
+      const url = hospitalFilter
+        ? `/api/dashboard/analytics?hospital_id=${hospitalFilter}`
+        : "/api/dashboard/analytics";
+      const res = await fetch(url);
       if (res.status === 401) return;
       if (!res.ok) throw new Error("Gagal memuat analisis");
       setData(await res.json());
@@ -121,11 +159,72 @@ export function AnalyticsPanel() {
     } finally {
       setLoading(false);
     }
+  }, [hospitalFilter]);
+
+  const fetchExcluded = useCallback(async () => {
+    setExcludedLoading(true);
+    try {
+      const res = await fetch("/api/dashboard/excluded");
+      if (res.status === 401) return;
+      if (!res.ok) throw new Error("Gagal memuat daftar excluded");
+      const json = await res.json();
+      setExcludedData(json.excluded || []);
+    } catch (err) {
+      console.error("Failed to fetch excluded:", err);
+    } finally {
+      setExcludedLoading(false);
+    }
   }, []);
 
   useEffect(() => {
     fetchAnalytics();
   }, [fetchAnalytics]);
+
+  useEffect(() => {
+    fetchExcluded();
+  }, [fetchExcluded]);
+
+  const handleExclude = async (id: string, reason: string) => {
+    const outlier = data?.outliers.details.find(o => o.id === id);
+    const rsName = outlier?.nama_rs || "Unknown";
+    if (!confirm(`Exclude responden dari ${rsName}?\n\nAlasan: ${reason}\n\nData akan di-soft-delete (bisa di-restore).`)) return;
+
+    setExcluding(id);
+    try {
+      const res = await fetch("/api/dashboard/exclude", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, reason }),
+      });
+      if (!res.ok) throw new Error("Failed to exclude");
+
+      await Promise.all([fetchAnalytics(), fetchExcluded()]);
+    } catch (err) {
+      alert("Gagal exclude responden. Coba lagi.");
+    } finally {
+      setExcluding(null);
+    }
+  };
+
+  const handleRestore = async (id: string) => {
+    if (!confirm("Kembalikan responden ini ke dataset aktif?")) return;
+
+    setRestoring(id);
+    try {
+      const res = await fetch("/api/dashboard/exclude", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      if (!res.ok) throw new Error("Failed to restore");
+
+      await Promise.all([fetchAnalytics(), fetchExcluded()]);
+    } catch (err) {
+      alert("Gagal restore responden. Coba lagi.");
+    } finally {
+      setRestoring(null);
+    }
+  };
 
   if (loading) {
     return (
@@ -143,7 +242,7 @@ export function AnalyticsPanel() {
     return <p className="text-sm text-gray-400 py-8 text-center">Belum ada data untuk dianalisis.</p>;
   }
 
-  const { adequacy, constructs, items, missingData, outliers } = data;
+  const { adequacy, constructs, items, missingData, outliers, hospitalList, excludedCount } = data;
 
   // Group items by construct
   const constructItems: Record<string, ItemStat[]> = {};
@@ -155,6 +254,77 @@ export function AnalyticsPanel() {
 
   return (
     <div className="space-y-6">
+      {/* ===== HOSPITAL FILTER ===== */}
+      <div className="bg-white rounded-xl border border-gray-200 p-4">
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-sm font-medium text-gray-600">Filter RS:</span>
+
+          {/* Search input with autocomplete */}
+          <div className="relative flex-1 max-w-xs">
+            <input
+              type="text"
+              placeholder="Ketik nama rumah sakit..."
+              value={hospitalSearch}
+              onChange={(e) => setHospitalSearch(e.target.value)}
+              className="w-full px-3 py-1.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            {/* Autocomplete dropdown — show when hospitalSearch.length > 1 */}
+            {hospitalSearch.length > 1 && (
+              <div className="absolute z-10 mt-1 w-full bg-white border rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                {hospitalList
+                  .filter(h => h.nama_rs.toLowerCase().includes(hospitalSearch.toLowerCase()))
+                  .map(h => (
+                    <button
+                      key={h.hospital_id}
+                      onClick={() => {
+                        setHospitalFilter(h.hospital_id);
+                        setHospitalSearch("");
+                      }}
+                      className="w-full text-left px-3 py-2 text-xs hover:bg-blue-50 border-b border-gray-50"
+                    >
+                      <span className="font-medium">{h.nama_rs}</span>
+                      <span className="text-gray-400 ml-2">({h.strata}) · {h.response_count} responden</span>
+                    </button>
+                  ))
+                }
+              </div>
+            )}
+          </div>
+
+          {/* Dropdown select */}
+          <select
+            value={hospitalFilter || ""}
+            onChange={(e) => setHospitalFilter(e.target.value ? Number(e.target.value) : null)}
+            className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg bg-white"
+          >
+            <option value="">Semua RS</option>
+            {hospitalList?.map(h => (
+              <option key={h.hospital_id} value={h.hospital_id}>
+                {h.nama_rs} ({h.strata})
+              </option>
+            ))}
+          </select>
+
+          {/* Reset button — only show when filter active */}
+          {hospitalFilter && (
+            <button
+              onClick={() => { setHospitalFilter(null); setHospitalSearch(""); }}
+              className="px-3 py-1.5 text-xs bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200"
+            >
+              ✕ Reset Filter
+            </button>
+          )}
+        </div>
+
+        {/* Active filter badge */}
+        {hospitalFilter && (
+          <div className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 bg-blue-50 text-blue-700 rounded-full text-xs font-medium">
+            📍 {hospitalList?.find(h => h.hospital_id === hospitalFilter)?.nama_rs}
+            ({hospitalList?.find(h => h.hospital_id === hospitalFilter)?.strata})
+          </div>
+        )}
+      </div>
+
       {/* ===== SAMPLE ADEQUACY ===== */}
       <div className="bg-white rounded-xl border border-gray-200 p-6">
         <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-4">
@@ -166,6 +336,11 @@ export function AnalyticsPanel() {
           <p className={`text-sm font-semibold ${adequacy.overall ? "text-emerald-800" : "text-amber-800"}`}>
             {adequacy.message}
           </p>
+          {excludedCount > 0 && (
+            <span className="text-xs text-gray-400 ml-2">
+              ({excludedCount} responden di-exclude)
+            </span>
+          )}
         </div>
 
         {/* Checklist */}
@@ -329,25 +504,102 @@ export function AnalyticsPanel() {
                   ⚠ {outliers.count} responden terindikasi outlier ({outliers.percentage}%)
                 </p>
               </div>
-              <div className="max-h-48 overflow-y-auto space-y-1.5">
-                {outliers.details.map((o, i) => (
-                  <div key={i} className="flex items-start gap-2 text-xs p-2 bg-gray-50 rounded">
+              <div className="max-h-64 overflow-y-auto space-y-1.5">
+                {outliers.details.map((o) => (
+                  <div key={o.id} className="flex items-center gap-2 text-xs p-2.5 bg-gray-50 rounded border border-gray-100 flex-wrap">
+                    {/* Type badge */}
                     <span className={`shrink-0 px-1.5 py-0.5 rounded font-medium ${
-                      o.type === "straightlining" ? "bg-red-100 text-red-600" : "bg-amber-100 text-amber-600"
+                      o.type === "straightlining"
+                        ? "bg-red-100 text-red-700"
+                        : o.type === "near-straightlining"
+                        ? "bg-amber-100 text-amber-700"
+                        : "bg-orange-100 text-orange-700"
                     }`}>
                       {o.type === "straightlining" ? "Straightline" : o.type === "near-straightlining" ? "Near-SL" : "Extreme"}
                     </span>
-                    <span className="text-gray-500">{o.detail}</span>
-                    <span className="text-gray-300 ml-auto font-mono text-[10px]">{o.id.slice(0, 8)}</span>
+
+                    {/* Detail */}
+                    <span className="text-gray-600">{o.detail}</span>
+                    <span className="text-gray-300">|</span>
+
+                    {/* RS + Strata */}
+                    <span className="text-gray-700 font-medium truncate max-w-[200px]" title={o.nama_rs}>
+                      {o.nama_rs || "RS tidak diketahui"}
+                    </span>
+                    <span className="text-gray-400 shrink-0">({o.strata})</span>
+                    <span className="text-gray-300">|</span>
+
+                    {/* Profesi */}
+                    <span className="text-gray-500 shrink-0">{o.profesi || "-"}</span>
+
+                    {/* Spacer + Exclude button */}
+                    <span className="ml-auto" />
+                    <button
+                      onClick={() => handleExclude(o.id, `${o.type}: ${o.detail}`)}
+                      disabled={excluding === o.id}
+                      className="shrink-0 px-2.5 py-1 bg-red-50 text-red-600 rounded hover:bg-red-100
+                                 transition-colors font-medium disabled:opacity-50"
+                    >
+                      {excluding === o.id ? "..." : "Exclude"}
+                    </button>
                   </div>
                 ))}
               </div>
               <p className="text-xs text-gray-400">
-                Pertimbangkan untuk menghapus straightliners sebelum analisis PLS-SEM.
+                Klik Exclude untuk soft-delete responden (bisa di-restore).
               </p>
             </div>
           )}
         </div>
+      </div>
+
+      {/* ===== EXCLUDED RESPONSES PANEL ===== */}
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
+            Excluded Responses ({excludedData.length})
+          </h3>
+          {excludedData.length > 0 && (
+            <span className="text-[10px] text-gray-400">
+              Soft-deleted — bisa di-restore kapan saja
+            </span>
+          )}
+        </div>
+
+        {excludedLoading ? (
+          <p className="text-sm text-gray-400">Loading...</p>
+        ) : excludedData.length === 0 ? (
+          <div className="rounded-lg bg-gray-50 border border-gray-100 p-4">
+            <p className="text-sm text-gray-400">Belum ada responden yang di-exclude.</p>
+          </div>
+        ) : (
+          <div className="space-y-1.5 max-h-60 overflow-y-auto">
+            {excludedData.map((ex) => (
+              <div key={ex.id} className="flex items-center gap-2 text-xs p-2.5 bg-red-50/50 rounded border border-red-100 flex-wrap">
+                <span className="px-1.5 py-0.5 rounded bg-red-100 text-red-600 font-medium shrink-0">
+                  Excluded
+                </span>
+                <span className="text-gray-600 truncate">{ex.excluded_reason}</span>
+                <span className="text-gray-300">|</span>
+                <span className="text-gray-700 font-medium truncate max-w-[180px]">{ex.nama_rs || "-"}</span>
+                <span className="text-gray-400 shrink-0">({ex.strata})</span>
+                <span className="text-gray-300">|</span>
+                <span className="text-gray-500 shrink-0">{ex.profesi || "-"}</span>
+                <span className="ml-auto text-gray-300 text-[10px] shrink-0">
+                  {new Date(ex.excluded_at).toLocaleDateString('id-ID')}
+                </span>
+                <button
+                  onClick={() => handleRestore(ex.id)}
+                  disabled={restoring === ex.id}
+                  className="shrink-0 px-2.5 py-1 bg-emerald-50 text-emerald-600 rounded
+                             hover:bg-emerald-100 transition-colors font-medium disabled:opacity-50"
+                >
+                  {restoring === ex.id ? "..." : "Restore"}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
