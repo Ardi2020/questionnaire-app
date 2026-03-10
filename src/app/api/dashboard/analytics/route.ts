@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabase } from "@/lib/supabase";
+import { getDb } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
 
@@ -95,25 +95,20 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const supabase = getSupabase();
-
-    // Fetch all responses with all likert items
-    const selectCols = [
-      "id", "jenis_rs", "kelas_rs",
-      ...ALL_ITEMS,
-    ].join(", ");
-
-    const { data: responses, error } = await supabase
-      .from("responses")
-      .select(selectCols)
-      .order("submitted_at", { ascending: true });
-
-    if (error) {
-      console.error("Analytics query error:", error);
-      return NextResponse.json({ error: "Failed to fetch data" }, { status: 500 });
-    }
-
-    const rows: ResponseRow[] = responses || [];
+    const sql = getDb();
+    // Neon serverless requires explicit template literal - column names are safe (predefined constants)
+    const rows = await sql`
+      SELECT id, jenis_rs, kelas_rs,
+             ti1, ti2, ti3, ti4,
+             os1, os2, os3, os4,
+             dc1, dc2, dc3, dc4,
+             peou1, peou2, peou3, peou4,
+             pu1, pu2, pu3, pu4,
+             bi1, bi2, bi3,
+             read1, read2, read3, read4, read_g1
+      FROM responses
+      ORDER BY submitted_at ASC
+    ` as ResponseRow[];
     const n = rows.length;
 
     if (n === 0) {
