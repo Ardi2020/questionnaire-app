@@ -1,0 +1,904 @@
+From 6b22c3db5aed2a201e9cd41d1e4f3649845ab28b Mon Sep 17 00:00:00 2001
+From: Ardi Muluk <asmuliardi@gmail.com>
+Date: Tue, 10 Mar 2026 02:39:25 +0000
+Subject: [PATCH] =?UTF-8?q?migrate:=20Supabase=20=E2=86=92=20Vercel=20Post?=
+ =?UTF-8?q?gres=20(Neon)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Replace @supabase/supabase-js with @vercel/postgres
+- Rewrite all 5 API routes to use sql tagged template literals
+- Add neon-schema.sql for database initialization
+- Remove Supabase client singleton, no more auto-pause issue
+---
+ neon-schema.sql                          |  71 ++++++++++
+ package-lock.json                        | 167 ++++++++++++++++++++++-
+ package.json                             |   1 +
+ src/app/api/dashboard/analytics/route.ts |  25 +---
+ src/app/api/dashboard/export/route.ts    |  59 +++-----
+ src/app/api/dashboard/reset/route.ts     |  22 +--
+ src/app/api/dashboard/route.ts           | 114 +++++-----------
+ src/app/api/submit/route.ts              |  77 ++++-------
+ src/lib/supabase.ts                      |  23 +---
+ 9 files changed, 322 insertions(+), 237 deletions(-)
+ create mode 100644 neon-schema.sql
+
+diff --git a/neon-schema.sql b/neon-schema.sql
+new file mode 100644
+index 0000000..94ac3f1
+--- /dev/null
++++ b/neon-schema.sql
+@@ -0,0 +1,71 @@
++-- ============================================================
++-- NEON POSTGRES SCHEMA
++-- Questionnaire App: BDA-AI Adoption Readiness
++-- Run this in: Vercel Dashboard → Storage → Neon → Query Editor
++-- ============================================================
++
++-- 1. RESPONSES TABLE (main data)
++CREATE TABLE IF NOT EXISTS responses (
++  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
++  submitted_at TIMESTAMPTZ DEFAULT now(),
++
++  -- Profil Responden
++  jenis_rs TEXT NOT NULL,
++  kelas_rs TEXT NOT NULL,
++  wilayah TEXT NOT NULL,
++  profesi TEXT NOT NULL,
++  pengalaman TEXT NOT NULL,
++  provinsi TEXT,
++  hospital_id INTEGER,
++  nama_rs TEXT,
++
++  -- A. Infrastruktur Teknologi (TI)
++  ti1 SMALLINT NOT NULL CHECK (ti1 BETWEEN 1 AND 7),
++  ti2 SMALLINT NOT NULL CHECK (ti2 BETWEEN 1 AND 7),
++  ti3 SMALLINT NOT NULL CHECK (ti3 BETWEEN 1 AND 7),
++  ti4 SMALLINT NOT NULL CHECK (ti4 BETWEEN 1 AND 7),
++
++  -- B. Dukungan Organisasi (OS)
++  os1 SMALLINT NOT NULL CHECK (os1 BETWEEN 1 AND 7),
++  os2 SMALLINT NOT NULL CHECK (os2 BETWEEN 1 AND 7),
++  os3 SMALLINT NOT NULL CHECK (os3 BETWEEN 1 AND 7),
++  os4 SMALLINT NOT NULL CHECK (os4 BETWEEN 1 AND 7),
++
++  -- C. Kapabilitas Data (DC)
++  dc1 SMALLINT NOT NULL CHECK (dc1 BETWEEN 1 AND 7),
++  dc2 SMALLINT NOT NULL CHECK (dc2 BETWEEN 1 AND 7),
++  dc3 SMALLINT NOT NULL CHECK (dc3 BETWEEN 1 AND 7),
++  dc4 SMALLINT NOT NULL CHECK (dc4 BETWEEN 1 AND 7),
++
++  -- D. Persepsi Kemudahan Penggunaan (PEOU)
++  peou1 SMALLINT NOT NULL CHECK (peou1 BETWEEN 1 AND 7),
++  peou2 SMALLINT NOT NULL CHECK (peou2 BETWEEN 1 AND 7),
++  peou3 SMALLINT NOT NULL CHECK (peou3 BETWEEN 1 AND 7),
++  peou4 SMALLINT NOT NULL CHECK (peou4 BETWEEN 1 AND 7),
++
++  -- E. Persepsi Kegunaan (PU)
++  pu1 SMALLINT NOT NULL CHECK (pu1 BETWEEN 1 AND 7),
++  pu2 SMALLINT NOT NULL CHECK (pu2 BETWEEN 1 AND 7),
++  pu3 SMALLINT NOT NULL CHECK (pu3 BETWEEN 1 AND 7),
++  pu4 SMALLINT NOT NULL CHECK (pu4 BETWEEN 1 AND 7),
++
++  -- F. Niat Perilaku (BI)
++  bi1 SMALLINT NOT NULL CHECK (bi1 BETWEEN 1 AND 7),
++  bi2 SMALLINT NOT NULL CHECK (bi2 BETWEEN 1 AND 7),
++  bi3 SMALLINT NOT NULL CHECK (bi3 BETWEEN 1 AND 7),
++
++  -- G. Kesiapan Organisasi (READ) - Formatif
++  read1  SMALLINT NOT NULL CHECK (read1  BETWEEN 1 AND 7),
++  read2  SMALLINT NOT NULL CHECK (read2  BETWEEN 1 AND 7),
++  read3  SMALLINT NOT NULL CHECK (read3  BETWEEN 1 AND 7),
++  read4  SMALLINT NOT NULL CHECK (read4  BETWEEN 1 AND 7),
++  read_g1 SMALLINT NOT NULL CHECK (read_g1 BETWEEN 1 AND 7)
++);
++
++CREATE INDEX IF NOT EXISTS idx_responses_hospital  ON responses(hospital_id);
++CREATE INDEX IF NOT EXISTS idx_responses_provinsi  ON responses(provinsi);
++CREATE INDEX IF NOT EXISTS idx_responses_submitted ON responses(submitted_at DESC);
++
++-- ============================================================
++-- SELESAI. Tidak perlu RLS karena auth dihandle di Next.js API.
++-- ============================================================
+diff --git a/package-lock.json b/package-lock.json
+index 079a20c..996741d 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -10,6 +10,7 @@
+       "dependencies": {
+         "@hookform/resolvers": "^5.2.2",
+         "@supabase/supabase-js": "^2.95.3",
++        "@vercel/postgres": "^0.10.0",
+         "class-variance-authority": "^0.7.1",
+         "clsx": "^2.1.1",
+         "lucide-react": "^0.563.0",
+@@ -313,7 +314,7 @@
+       "version": "7.27.1",
+       "resolved": "https://registry.npmjs.org/@babel/helper-string-parser/-/helper-string-parser-7.27.1.tgz",
+       "integrity": "sha512-qMlSxKbpRlAridDExk92nSobyDdpPijUq2DW6oDnUqd0iOGxmQjyqhMIihI9+zv4LPyZdRje2cavWPbCbWm3eA==",
+-      "devOptional": true,
++      "dev": true,
+       "license": "MIT",
+       "engines": {
+         "node": ">=6.9.0"
+@@ -323,7 +324,7 @@
+       "version": "7.28.5",
+       "resolved": "https://registry.npmjs.org/@babel/helper-validator-identifier/-/helper-validator-identifier-7.28.5.tgz",
+       "integrity": "sha512-qSs4ifwzKJSV39ucNjsvc6WVHs6b7S03sOh2OcHF9UHfVPqWWALUsNUVzhSBiItjRZoLHx7nIarVjqKVusUZ1Q==",
+-      "devOptional": true,
++      "dev": true,
+       "license": "MIT",
+       "engines": {
+         "node": ">=6.9.0"
+@@ -496,7 +497,7 @@
+       "version": "7.29.0",
+       "resolved": "https://registry.npmjs.org/@babel/types/-/types-7.29.0.tgz",
+       "integrity": "sha512-LwdZHpScM4Qz8Xw2iKSzS+cfglZzJGvofQICy7W7v4caru4EaAmyUuO6BGrbyQ2mYV11W0U8j5mBhd14dd3B0A==",
+-      "devOptional": true,
++      "dev": true,
+       "license": "MIT",
+       "dependencies": {
+         "@babel/helper-string-parser": "^7.27.1",
+@@ -1733,6 +1734,15 @@
+         "@tybys/wasm-util": "^0.10.0"
+       }
+     },
++    "node_modules/@neondatabase/serverless": {
++      "version": "0.9.5",
++      "resolved": "https://registry.npmjs.org/@neondatabase/serverless/-/serverless-0.9.5.tgz",
++      "integrity": "sha512-siFas6gItqv6wD/pZnvdu34wEqgG3nSE6zWZdq5j2DEsa+VvX8i/5HXJOo06qrw5axPXn+lGCxeR+NLaSPIXug==",
++      "license": "MIT",
++      "dependencies": {
++        "@types/pg": "8.11.6"
++      }
++    },
+     "node_modules/@next/env": {
+       "version": "16.1.6",
+       "resolved": "https://registry.npmjs.org/@next/env/-/env-16.1.6.tgz",
+@@ -3982,6 +3992,17 @@
+         "undici-types": "~6.21.0"
+       }
+     },
++    "node_modules/@types/pg": {
++      "version": "8.11.6",
++      "resolved": "https://registry.npmjs.org/@types/pg/-/pg-8.11.6.tgz",
++      "integrity": "sha512-/2WmmBXHLsfRqzfHW7BNZ8SbYzE8OSk7i3WjFYvfgRHj7S1xj+16Je5fUKv3lVdVzk/zn9TXOqf+avFCFIE0yQ==",
++      "license": "MIT",
++      "dependencies": {
++        "@types/node": "*",
++        "pg-protocol": "*",
++        "pg-types": "^4.0.1"
++      }
++    },
+     "node_modules/@types/phoenix": {
+       "version": "1.6.7",
+       "resolved": "https://registry.npmjs.org/@types/phoenix/-/phoenix-1.6.7.tgz",
+@@ -3992,7 +4013,7 @@
+       "version": "19.2.13",
+       "resolved": "https://registry.npmjs.org/@types/react/-/react-19.2.13.tgz",
+       "integrity": "sha512-KkiJeU6VbYbUOp5ITMIc7kBfqlYkKA5KhEHVrGMmUUMt7NeaZg65ojdPk+FtNrBAOXNVM5QM72jnADjM+XVRAQ==",
+-      "devOptional": true,
++      "dev": true,
+       "license": "MIT",
+       "dependencies": {
+         "csstype": "^3.2.2"
+@@ -4002,7 +4023,7 @@
+       "version": "19.2.3",
+       "resolved": "https://registry.npmjs.org/@types/react-dom/-/react-dom-19.2.3.tgz",
+       "integrity": "sha512-jp2L/eY6fn+KgVVQAOqYItbF0VY/YApe5Mz2F0aykSO8gx31bYCZyvSeYxCHKvzHG5eZjc+zyaS5BrBWya2+kQ==",
+-      "devOptional": true,
++      "dev": true,
+       "license": "MIT",
+       "peerDependencies": {
+         "@types/react": "^19.2.0"
+@@ -4576,6 +4597,21 @@
+         "win32"
+       ]
+     },
++    "node_modules/@vercel/postgres": {
++      "version": "0.10.0",
++      "resolved": "https://registry.npmjs.org/@vercel/postgres/-/postgres-0.10.0.tgz",
++      "integrity": "sha512-fSD23DxGND40IzSkXjcFcxr53t3Tiym59Is0jSYIFpG4/0f0KO9SGtcp1sXiebvPaGe7N/tU05cH4yt2S6/IPg==",
++      "deprecated": "@vercel/postgres is deprecated. If you are setting up a new database, you can choose an alternate storage solution from the Vercel Marketplace. If you had an existing Vercel Postgres database, it should have been migrated to Neon as a native Vercel integration. You can find more details and the guide to migrate to Neon's SDKs here: https://neon.com/docs/guides/vercel-postgres-transition-guide",
++      "license": "Apache-2.0",
++      "dependencies": {
++        "@neondatabase/serverless": "^0.9.3",
++        "bufferutil": "^4.0.8",
++        "ws": "^8.17.1"
++      },
++      "engines": {
++        "node": ">=18.14"
++      }
++    },
+     "node_modules/accepts": {
+       "version": "2.0.0",
+       "resolved": "https://registry.npmjs.org/accepts/-/accepts-2.0.0.tgz",
+@@ -4980,7 +5016,7 @@
+       "version": "1.0.0",
+       "resolved": "https://registry.npmjs.org/babel-plugin-react-compiler/-/babel-plugin-react-compiler-1.0.0.tgz",
+       "integrity": "sha512-Ixm8tFfoKKIPYdCCKYTsqv+Fd4IJ0DQqMyEimo+pxUOMUR9cVPlwTrFt9Avu+3cb6Zp3mAzl+t1MrG2fxxKsxw==",
+-      "devOptional": true,
++      "dev": true,
+       "license": "MIT",
+       "dependencies": {
+         "@babel/types": "^7.26.0"
+@@ -5085,6 +5121,19 @@
+         "node": "^6 || ^7 || ^8 || ^9 || ^10 || ^11 || ^12 || >=13.7"
+       }
+     },
++    "node_modules/bufferutil": {
++      "version": "4.1.0",
++      "resolved": "https://registry.npmjs.org/bufferutil/-/bufferutil-4.1.0.tgz",
++      "integrity": "sha512-ZMANVnAixE6AWWnPzlW2KpUrxhm9woycYvPOo67jWHyFowASTEd9s+QN1EIMsSDtwhIxN4sWE1jotpuDUIgyIw==",
++      "hasInstallScript": true,
++      "license": "MIT",
++      "dependencies": {
++        "node-gyp-build": "^4.3.0"
++      },
++      "engines": {
++        "node": ">=6.14.2"
++      }
++    },
+     "node_modules/bundle-name": {
+       "version": "4.1.0",
+       "resolved": "https://registry.npmjs.org/bundle-name/-/bundle-name-4.1.0.tgz",
+@@ -5524,7 +5573,7 @@
+       "version": "3.2.3",
+       "resolved": "https://registry.npmjs.org/csstype/-/csstype-3.2.3.tgz",
+       "integrity": "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==",
+-      "devOptional": true,
++      "dev": true,
+       "license": "MIT"
+     },
+     "node_modules/damerau-levenshtein": {
+@@ -9046,6 +9095,17 @@
+         "url": "https://opencollective.com/node-fetch"
+       }
+     },
++    "node_modules/node-gyp-build": {
++      "version": "4.8.4",
++      "resolved": "https://registry.npmjs.org/node-gyp-build/-/node-gyp-build-4.8.4.tgz",
++      "integrity": "sha512-LA4ZjwlnUblHVgq0oBF3Jl/6h/Nvs5fzBLwdEF4nuxnFdsfajde4WfxtJr3CaiH+F6ewcIB/q4jQ4UzPyid+CQ==",
++      "license": "MIT",
++      "bin": {
++        "node-gyp-build": "bin.js",
++        "node-gyp-build-optional": "optional.js",
++        "node-gyp-build-test": "build-test.js"
++      }
++    },
+     "node_modules/node-releases": {
+       "version": "2.0.27",
+       "resolved": "https://registry.npmjs.org/node-releases/-/node-releases-2.0.27.tgz",
+@@ -9216,6 +9276,12 @@
+         "url": "https://github.com/sponsors/ljharb"
+       }
+     },
++    "node_modules/obuf": {
++      "version": "1.1.2",
++      "resolved": "https://registry.npmjs.org/obuf/-/obuf-1.1.2.tgz",
++      "integrity": "sha512-PX1wu0AmAdPqOL1mWhqmlOd8kOIZQwGZw6rh7uby9fTc5lhaOWFLX3I6R1hrF9k3zUY40e6igsLGkDXK92LJNg==",
++      "license": "MIT"
++    },
+     "node_modules/on-finished": {
+       "version": "2.4.1",
+       "resolved": "https://registry.npmjs.org/on-finished/-/on-finished-2.4.1.tgz",
+@@ -9491,6 +9557,48 @@
+       "dev": true,
+       "license": "MIT"
+     },
++    "node_modules/pg-int8": {
++      "version": "1.0.1",
++      "resolved": "https://registry.npmjs.org/pg-int8/-/pg-int8-1.0.1.tgz",
++      "integrity": "sha512-WCtabS6t3c8SkpDBUlb1kjOs7l66xsGdKpIPZsg4wR+B3+u9UAum2odSsF9tnvxg80h4ZxLWMy4pRjOsFIqQpw==",
++      "license": "ISC",
++      "engines": {
++        "node": ">=4.0.0"
++      }
++    },
++    "node_modules/pg-numeric": {
++      "version": "1.0.2",
++      "resolved": "https://registry.npmjs.org/pg-numeric/-/pg-numeric-1.0.2.tgz",
++      "integrity": "sha512-BM/Thnrw5jm2kKLE5uJkXqqExRUY/toLHda65XgFTBTFYZyopbKjBe29Ii3RbkvlsMoFwD+tHeGaCjjv0gHlyw==",
++      "license": "ISC",
++      "engines": {
++        "node": ">=4"
++      }
++    },
++    "node_modules/pg-protocol": {
++      "version": "1.13.0",
++      "resolved": "https://registry.npmjs.org/pg-protocol/-/pg-protocol-1.13.0.tgz",
++      "integrity": "sha512-zzdvXfS6v89r6v7OcFCHfHlyG/wvry1ALxZo4LqgUoy7W9xhBDMaqOuMiF3qEV45VqsN6rdlcehHrfDtlCPc8w==",
++      "license": "MIT"
++    },
++    "node_modules/pg-types": {
++      "version": "4.1.0",
++      "resolved": "https://registry.npmjs.org/pg-types/-/pg-types-4.1.0.tgz",
++      "integrity": "sha512-o2XFanIMy/3+mThw69O8d4n1E5zsLhdO+OPqswezu7Z5ekP4hYDqlDjlmOpYMbzY2Br0ufCwJLdDIXeNVwcWFg==",
++      "license": "MIT",
++      "dependencies": {
++        "pg-int8": "1.0.1",
++        "pg-numeric": "1.0.2",
++        "postgres-array": "~3.0.1",
++        "postgres-bytea": "~3.0.0",
++        "postgres-date": "~2.1.0",
++        "postgres-interval": "^3.0.0",
++        "postgres-range": "^1.1.1"
++      },
++      "engines": {
++        "node": ">=10"
++      }
++    },
+     "node_modules/picocolors": {
+       "version": "1.1.1",
+       "resolved": "https://registry.npmjs.org/picocolors/-/picocolors-1.1.1.tgz",
+@@ -9573,6 +9681,51 @@
+         "node": ">=4"
+       }
+     },
++    "node_modules/postgres-array": {
++      "version": "3.0.4",
++      "resolved": "https://registry.npmjs.org/postgres-array/-/postgres-array-3.0.4.tgz",
++      "integrity": "sha512-nAUSGfSDGOaOAEGwqsRY27GPOea7CNipJPOA7lPbdEpx5Kg3qzdP0AaWC5MlhTWV9s4hFX39nomVZ+C4tnGOJQ==",
++      "license": "MIT",
++      "engines": {
++        "node": ">=12"
++      }
++    },
++    "node_modules/postgres-bytea": {
++      "version": "3.0.0",
++      "resolved": "https://registry.npmjs.org/postgres-bytea/-/postgres-bytea-3.0.0.tgz",
++      "integrity": "sha512-CNd4jim9RFPkObHSjVHlVrxoVQXz7quwNFpz7RY1okNNme49+sVyiTvTRobiLV548Hx/hb1BG+iE7h9493WzFw==",
++      "license": "MIT",
++      "dependencies": {
++        "obuf": "~1.1.2"
++      },
++      "engines": {
++        "node": ">= 6"
++      }
++    },
++    "node_modules/postgres-date": {
++      "version": "2.1.0",
++      "resolved": "https://registry.npmjs.org/postgres-date/-/postgres-date-2.1.0.tgz",
++      "integrity": "sha512-K7Juri8gtgXVcDfZttFKVmhglp7epKb1K4pgrkLxehjqkrgPhfG6OO8LHLkfaqkbpjNRnra018XwAr1yQFWGcA==",
++      "license": "MIT",
++      "engines": {
++        "node": ">=12"
++      }
++    },
++    "node_modules/postgres-interval": {
++      "version": "3.0.0",
++      "resolved": "https://registry.npmjs.org/postgres-interval/-/postgres-interval-3.0.0.tgz",
++      "integrity": "sha512-BSNDnbyZCXSxgA+1f5UU2GmwhoI0aU5yMxRGO8CdFEcY2BQF9xm/7MqKnYoM1nJDk8nONNWDk9WeSmePFhQdlw==",
++      "license": "MIT",
++      "engines": {
++        "node": ">=12"
++      }
++    },
++    "node_modules/postgres-range": {
++      "version": "1.1.4",
++      "resolved": "https://registry.npmjs.org/postgres-range/-/postgres-range-1.1.4.tgz",
++      "integrity": "sha512-i/hbxIE9803Alj/6ytL7UHQxRvZkI9O4Sy+J3HGc4F4oo/2eQAjTSNJ0bfxyse3bH0nuVesCk+3IRLaMtG3H6w==",
++      "license": "MIT"
++    },
+     "node_modules/powershell-utils": {
+       "version": "0.1.0",
+       "resolved": "https://registry.npmjs.org/powershell-utils/-/powershell-utils-0.1.0.tgz",
+diff --git a/package.json b/package.json
+index 63b2827..a54aff2 100644
+--- a/package.json
++++ b/package.json
+@@ -11,6 +11,7 @@
+   "dependencies": {
+     "@hookform/resolvers": "^5.2.2",
+     "@supabase/supabase-js": "^2.95.3",
++    "@vercel/postgres": "^0.10.0",
+     "class-variance-authority": "^0.7.1",
+     "clsx": "^2.1.1",
+     "lucide-react": "^0.563.0",
+diff --git a/src/app/api/dashboard/analytics/route.ts b/src/app/api/dashboard/analytics/route.ts
+index fae413f..9dd5046 100644
+--- a/src/app/api/dashboard/analytics/route.ts
++++ b/src/app/api/dashboard/analytics/route.ts
+@@ -1,5 +1,5 @@
+ import { NextRequest, NextResponse } from "next/server";
+-import { getSupabase } from "@/lib/supabase";
++import { sql } from "@/lib/supabase";
+ 
+ export const dynamic = "force-dynamic";
+ 
+@@ -95,25 +95,10 @@ export async function GET(request: NextRequest) {
+   }
+ 
+   try {
+-    const supabase = getSupabase();
+-
+-    // Fetch all responses with all likert items
+-    const selectCols = [
+-      "id", "jenis_rs", "kelas_rs",
+-      ...ALL_ITEMS,
+-    ].join(", ");
+-
+-    const { data: responses, error } = await supabase
+-      .from("responses")
+-      .select(selectCols)
+-      .order("submitted_at", { ascending: true });
+-
+-    if (error) {
+-      console.error("Analytics query error:", error);
+-      return NextResponse.json({ error: "Failed to fetch data" }, { status: 500 });
+-    }
+-
+-    const rows: ResponseRow[] = responses || [];
++    const selectCols = ["id", "jenis_rs", "kelas_rs", ...ALL_ITEMS].join(", ");
++    const { rows } = await sql.query(
++      `SELECT ${selectCols} FROM responses ORDER BY submitted_at ASC`
++    ) as { rows: ResponseRow[] };
+     const n = rows.length;
+ 
+     if (n === 0) {
+diff --git a/src/app/api/dashboard/export/route.ts b/src/app/api/dashboard/export/route.ts
+index 508702b..6a9627e 100644
+--- a/src/app/api/dashboard/export/route.ts
++++ b/src/app/api/dashboard/export/route.ts
+@@ -1,5 +1,5 @@
+ import { NextRequest, NextResponse } from "next/server";
+-import { getSupabase } from "@/lib/supabase";
++import { sql } from "@/lib/supabase";
+ 
+ export const dynamic = "force-dynamic";
+ 
+@@ -14,20 +14,9 @@ export async function GET(request: NextRequest) {
+   }
+ 
+   try {
+-    const supabase = getSupabase();
+-
+-    const { data: responses, error } = await supabase
+-      .from("responses")
+-      .select("*")
+-      .order("submitted_at", { ascending: true });
+-
+-    if (error) {
+-      console.error("Export error:", error);
+-      return NextResponse.json(
+-        { error: "Failed to fetch data" },
+-        { status: 500 }
+-      );
+-    }
++    const { rows: responses } = await sql`
++      SELECT * FROM responses ORDER BY submitted_at ASC
++    `;
+ 
+     if (!responses || responses.length === 0) {
+       return new NextResponse("Belum ada data responden.", {
+@@ -36,18 +25,10 @@ export async function GET(request: NextRequest) {
+       });
+     }
+ 
+-    // Build CSV
+     const columns = [
+-      "id",
+-      "submitted_at",
+-      "jenis_rs",
+-      "kelas_rs",
+-      "provinsi",
+-      "nama_rs",
+-      "hospital_id",
+-      "wilayah",
+-      "profesi",
+-      "pengalaman",
++      "id", "submitted_at",
++      "jenis_rs", "kelas_rs", "provinsi", "nama_rs", "hospital_id",
++      "wilayah", "profesi", "pengalaman",
+       "ti1", "ti2", "ti3", "ti4",
+       "os1", "os2", "os3", "os4",
+       "dc1", "dc2", "dc3", "dc4",
+@@ -59,18 +40,15 @@ export async function GET(request: NextRequest) {
+ 
+     const header = columns.join(",");
+     const rows = responses.map((r) =>
+-      columns
+-        .map((col) => {
+-          const val = r[col];
+-          if (val === null || val === undefined) return "";
+-          const str = String(val);
+-          // Escape CSV values containing commas or quotes
+-          if (str.includes(",") || str.includes('"') || str.includes("\n")) {
+-            return `"${str.replace(/"/g, '""')}"`;
+-          }
+-          return str;
+-        })
+-        .join(",")
++      columns.map((col) => {
++        const val = r[col];
++        if (val === null || val === undefined) return "";
++        const str = String(val);
++        if (str.includes(",") || str.includes('"') || str.includes("\n")) {
++          return `"${str.replace(/"/g, '""')}"`;
++        }
++        return str;
++      }).join(",")
+     );
+ 
+     const csv = [header, ...rows].join("\n");
+@@ -84,9 +62,6 @@ export async function GET(request: NextRequest) {
+     });
+   } catch (err) {
+     console.error("Export error:", err);
+-    return NextResponse.json(
+-      { error: "Internal server error" },
+-      { status: 500 }
+-    );
++    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+   }
+ }
+diff --git a/src/app/api/dashboard/reset/route.ts b/src/app/api/dashboard/reset/route.ts
+index 36392d0..29e890b 100644
+--- a/src/app/api/dashboard/reset/route.ts
++++ b/src/app/api/dashboard/reset/route.ts
+@@ -1,5 +1,5 @@
+ import { NextRequest, NextResponse } from "next/server";
+-import { getSupabase } from "@/lib/supabase";
++import { sql } from "@/lib/supabase";
+ 
+ export const dynamic = "force-dynamic";
+ 
+@@ -14,26 +14,12 @@ export async function DELETE(request: NextRequest) {
+   }
+ 
+   try {
+-    const supabase = getSupabase();
+-
+-    // Delete all responses (neq filter to match all rows)
+-    const { error, count } = await supabase
+-      .from("responses")
+-      .delete({ count: "exact" })
+-      .neq("id", "00000000-0000-0000-0000-000000000000");
+-
+-    if (error) {
+-      console.error("Reset error:", error);
+-      return NextResponse.json(
+-        { error: "Gagal menghapus data", detail: error.message },
+-        { status: 500 }
+-      );
+-    }
++    const { rowCount } = await sql`DELETE FROM responses`;
+ 
+     return NextResponse.json({
+       success: true,
+-      deleted: count,
+-      message: `${count} respons berhasil dihapus`,
++      deleted: rowCount,
++      message: `${rowCount} respons berhasil dihapus`,
+     });
+   } catch (err) {
+     console.error("Reset error:", err);
+diff --git a/src/app/api/dashboard/route.ts b/src/app/api/dashboard/route.ts
+index 23724f8..4fb4455 100644
+--- a/src/app/api/dashboard/route.ts
++++ b/src/app/api/dashboard/route.ts
+@@ -1,5 +1,5 @@
+ import { NextRequest, NextResponse } from "next/server";
+-import { getSupabase } from "@/lib/supabase";
++import { sql } from "@/lib/supabase";
+ import { HOSPITALS } from "@/lib/hospitals";
+ 
+ export const dynamic = "force-dynamic";
+@@ -9,55 +9,44 @@ function checkAuth(request: NextRequest): boolean {
+   return cookie?.value === process.env.DASHBOARD_PASSWORD;
+ }
+ 
++// eslint-disable-next-line @typescript-eslint/no-explicit-any
++type Row = Record<string, any>;
++
++function getStrata(jenisRS: string, kelasRS: string): string {
++  const isPub = jenisRS?.includes("Publik") || jenisRS?.includes("Pemerintah");
++  if (isPub && kelasRS === "Kelas A") return "Publik_A";
++  if (isPub && kelasRS === "Kelas B") return "Publik_B";
++  if (isPub && kelasRS === "Kelas C") return "Publik_C";
++  if (!isPub && (kelasRS === "Kelas A" || kelasRS === "Kelas B")) return "Swasta_AB";
++  if (!isPub && kelasRS === "Kelas C") return "Swasta_C";
++  return "Unknown";
++}
++
+ export async function GET(request: NextRequest) {
+   if (!checkAuth(request)) {
+     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+   }
+ 
+   try {
+-    const supabase = getSupabase();
+-
+-    // Fetch all responses
+-    const { data: responses, error } = await supabase
+-      .from("responses")
+-      .select(
+-        "id, submitted_at, jenis_rs, kelas_rs, provinsi, hospital_id, nama_rs, profesi, wilayah"
+-      )
+-      .order("submitted_at", { ascending: false });
+-
+-    if (error) {
+-      console.error("Dashboard query error:", error);
+-      return NextResponse.json(
+-        { error: "Failed to fetch data" },
+-        { status: 500 }
+-      );
+-    }
++    const { rows: responses } = await sql`
++      SELECT id, submitted_at, jenis_rs, kelas_rs, provinsi, hospital_id, nama_rs, profesi, wilayah
++      FROM responses
++      ORDER BY submitted_at DESC
++    ` as { rows: Row[] };
+ 
+     const allResponses = responses || [];
+     const total = allResponses.length;
+-    const lastSubmission =
+-      total > 0 ? allResponses[0].submitted_at : null;
++    const lastSubmission = total > 0 ? allResponses[0].submitted_at : null;
+ 
+     // Strata quota
+     const strataTargets = [
+-      { strata: "Publik_A", label: "RS Publik Kelas A", target: 30 },
+-      { strata: "Publik_B", label: "RS Publik Kelas B", target: 75 },
+-      { strata: "Publik_C", label: "RS Publik Kelas C", target: 75 },
++      { strata: "Publik_A",  label: "RS Publik Kelas A",     target: 30 },
++      { strata: "Publik_B",  label: "RS Publik Kelas B",     target: 75 },
++      { strata: "Publik_C",  label: "RS Publik Kelas C",     target: 75 },
+       { strata: "Swasta_AB", label: "RS Swasta Kelas A & B", target: 45 },
+-      { strata: "Swasta_C", label: "RS Swasta Kelas C", target: 75 },
++      { strata: "Swasta_C",  label: "RS Swasta Kelas C",     target: 75 },
+     ];
+ 
+-    function getStrata(jenisRS: string, kelasRS: string): string {
+-      const isPub = jenisRS?.includes("Publik") || jenisRS?.includes("Pemerintah");
+-      if (isPub && kelasRS === "Kelas A") return "Publik_A";
+-      if (isPub && kelasRS === "Kelas B") return "Publik_B";
+-      if (isPub && kelasRS === "Kelas C") return "Publik_C";
+-      if (!isPub && (kelasRS === "Kelas A" || kelasRS === "Kelas B"))
+-        return "Swasta_AB";
+-      if (!isPub && kelasRS === "Kelas C") return "Swasta_C";
+-      return "Unknown";
+-    }
+-
+     const strataCounts: Record<string, number> = {};
+     allResponses.forEach((r) => {
+       const s = getStrata(r.jenis_rs, r.kelas_rs);
+@@ -67,9 +56,7 @@ export async function GET(request: NextRequest) {
+     const strataQuota = strataTargets.map((st) => ({
+       ...st,
+       current: strataCounts[st.strata] || 0,
+-      percentage: Math.round(
+-        ((strataCounts[st.strata] || 0) / st.target) * 100
+-      ),
++      percentage: Math.round(((strataCounts[st.strata] || 0) / st.target) * 100),
+     }));
+ 
+     // Province stats
+@@ -86,13 +73,8 @@ export async function GET(request: NextRequest) {
+     });
+ 
+     const provinsiOrder = [
+-      "Sumatera Barat",
+-      "DKI Jakarta",
+-      "Jawa Barat",
+-      "Jawa Tengah",
+-      "DI Yogyakarta",
+-      "Jawa Timur",
+-      "Banten",
++      "Sumatera Barat", "DKI Jakarta", "Jawa Barat",
++      "Jawa Tengah", "DI Yogyakarta", "Jawa Timur", "Banten",
+     ];
+ 
+     const provinsiStats = provinsiOrder.map((p) => {
+@@ -108,26 +90,17 @@ export async function GET(request: NextRequest) {
+       };
+     });
+ 
+-    // Add "Lainnya" if any responses from other provinces
+     const otherCount = allResponses.filter(
+       (r) => r.provinsi && !provinsiOrder.includes(r.provinsi)
+     ).length;
+     if (otherCount > 0) {
+-      provinsiStats.push({
+-        provinsi: "Lainnya",
+-        current: otherCount,
+-        targetRS: 0,
+-        targetResp: 0,
+-        percentage: 0,
+-      });
++      provinsiStats.push({ provinsi: "Lainnya", current: otherCount, targetRS: 0, targetResp: 0, percentage: 0 });
+     }
+ 
+     // Profesi stats
+     const profesiCounts: Record<string, number> = {};
+     allResponses.forEach((r) => {
+-      if (r.profesi) {
+-        profesiCounts[r.profesi] = (profesiCounts[r.profesi] || 0) + 1;
+-      }
++      if (r.profesi) profesiCounts[r.profesi] = (profesiCounts[r.profesi] || 0) + 1;
+     });
+ 
+     const profesiStats = Object.entries(profesiCounts).map(([p, count]) => ({
+@@ -139,10 +112,7 @@ export async function GET(request: NextRequest) {
+     // Hospital stats
+     const hospitalCounts: Record<number, number> = {};
+     allResponses.forEach((r) => {
+-      if (r.hospital_id) {
+-        hospitalCounts[r.hospital_id] =
+-          (hospitalCounts[r.hospital_id] || 0) + 1;
+-      }
++      if (r.hospital_id) hospitalCounts[r.hospital_id] = (hospitalCounts[r.hospital_id] || 0) + 1;
+     });
+ 
+     const hospitalStats = HOSPITALS.map((h) => {
+@@ -151,29 +121,16 @@ export async function GET(request: NextRequest) {
+       let status: "complete" | "partial" | "empty" = "empty";
+       if (current >= target) status = "complete";
+       else if (current > 0) status = "partial";
+-      return {
+-        id: h.id,
+-        nama: h.nama,
+-        strata: h.strata,
+-        provinsi: h.provinsi,
+-        kotaKab: h.kotaKab,
+-        current,
+-        target,
+-        status,
+-      };
++      return { id: h.id, nama: h.nama, strata: h.strata, provinsi: h.provinsi, kotaKab: h.kotaKab, current, target, status };
+     });
+ 
+-    // Non-target RS (hospital_id is null but nama_rs exists)
++    // Non-target RS
+     const nonTargetMap: Record<string, { nama: string; provinsi: string; count: number }> = {};
+     allResponses.forEach((r) => {
+       if (!r.hospital_id && r.nama_rs) {
+         const key = r.nama_rs.trim().toLowerCase();
+         if (!nonTargetMap[key]) {
+-          nonTargetMap[key] = {
+-            nama: r.nama_rs.trim(),
+-            provinsi: r.provinsi || "Tidak diketahui",
+-            count: 0,
+-          };
++          nonTargetMap[key] = { nama: r.nama_rs.trim(), provinsi: r.provinsi || "Tidak diketahui", count: 0 };
+         }
+         nonTargetMap[key].count += 1;
+       }
+@@ -192,9 +149,6 @@ export async function GET(request: NextRequest) {
+     });
+   } catch (err) {
+     console.error("Dashboard error:", err);
+-    return NextResponse.json(
+-      { error: "Internal server error" },
+-      { status: 500 }
+-    );
++    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+   }
+ }
+diff --git a/src/app/api/submit/route.ts b/src/app/api/submit/route.ts
+index 857b73c..594711d 100644
+--- a/src/app/api/submit/route.ts
++++ b/src/app/api/submit/route.ts
+@@ -1,6 +1,6 @@
+ import { NextResponse } from "next/server";
+ import { fullSurveySchema } from "@/lib/schemas";
+-import { getSupabase } from "@/lib/supabase";
++import { sql } from "@/lib/supabase";
+ import { v4 as uuidv4 } from "uuid";
+ 
+ export const dynamic = "force-dynamic";
+@@ -20,56 +20,33 @@ export async function POST(request: Request) {
+ 
+     const data = result.data;
+ 
+-    // Insert into Supabase
+-    const supabase = getSupabase();
+-    const { error } = await supabase.from("responses").insert({
+-      id: uuidv4(),
+-      submitted_at: new Date().toISOString(),
+-      jenis_rs: data.jenisRS,
+-      kelas_rs: data.kelasRS,
+-      provinsi: data.provinsiDetail || null,
+-      hospital_id: data.hospitalId || null,
+-      nama_rs: data.namaRS || null,
+-      wilayah: data.wilayah,
+-      profesi: data.profesi,
+-      pengalaman: data.pengalaman,
+-      ti1: data.TI1,
+-      ti2: data.TI2,
+-      ti3: data.TI3,
+-      ti4: data.TI4,
+-      os1: data.OS1,
+-      os2: data.OS2,
+-      os3: data.OS3,
+-      os4: data.OS4,
+-      dc1: data.DC1,
+-      dc2: data.DC2,
+-      dc3: data.DC3,
+-      dc4: data.DC4,
+-      peou1: data.PEOU1,
+-      peou2: data.PEOU2,
+-      peou3: data.PEOU3,
+-      peou4: data.PEOU4,
+-      pu1: data.PU1,
+-      pu2: data.PU2,
+-      pu3: data.PU3,
+-      pu4: data.PU4,
+-      bi1: data.BI1,
+-      bi2: data.BI2,
+-      bi3: data.BI3,
+-      read1: data.READ1,
+-      read2: data.READ2,
+-      read3: data.READ3,
+-      read4: data.READ4,
+-      read_g1: data.READ_G1,
+-    });
++    const id = uuidv4();
+ 
+-    if (error) {
+-      console.error("Supabase insert error:", error);
+-      return NextResponse.json(
+-        { error: "Gagal menyimpan data" },
+-        { status: 500 }
+-      );
+-    }
++    await sql`
++      INSERT INTO responses (
++        id, submitted_at,
++        jenis_rs, kelas_rs, provinsi, hospital_id, nama_rs, wilayah, profesi, pengalaman,
++        ti1, ti2, ti3, ti4,
++        os1, os2, os3, os4,
++        dc1, dc2, dc3, dc4,
++        peou1, peou2, peou3, peou4,
++        pu1, pu2, pu3, pu4,
++        bi1, bi2, bi3,
++        read1, read2, read3, read4, read_g1
++      ) VALUES (
++        ${id}, NOW(),
++        ${data.jenisRS}, ${data.kelasRS}, ${data.provinsiDetail || null},
++        ${data.hospitalId || null}, ${data.namaRS || null}, ${data.wilayah},
++        ${data.profesi}, ${data.pengalaman},
++        ${data.TI1}, ${data.TI2}, ${data.TI3}, ${data.TI4},
++        ${data.OS1}, ${data.OS2}, ${data.OS3}, ${data.OS4},
++        ${data.DC1}, ${data.DC2}, ${data.DC3}, ${data.DC4},
++        ${data.PEOU1}, ${data.PEOU2}, ${data.PEOU3}, ${data.PEOU4},
++        ${data.PU1}, ${data.PU2}, ${data.PU3}, ${data.PU4},
++        ${data.BI1}, ${data.BI2}, ${data.BI3},
++        ${data.READ1}, ${data.READ2}, ${data.READ3}, ${data.READ4}, ${data.READ_G1}
++      )
++    `;
+ 
+     return NextResponse.json({ success: true });
+   } catch (error) {
+diff --git a/src/lib/supabase.ts b/src/lib/supabase.ts
+index 958d268..bd860b5 100644
+--- a/src/lib/supabase.ts
++++ b/src/lib/supabase.ts
+@@ -1,20 +1,3 @@
+-import { createClient, SupabaseClient } from "@supabase/supabase-js";
+-
+-let _supabase: SupabaseClient | null = null;
+-
+-export function getSupabase(): SupabaseClient {
+-  if (!_supabase) {
+-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+-
+-    if (!supabaseUrl || !supabaseServiceKey) {
+-      throw new Error(
+-        "Missing Supabase environment variables. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY."
+-      );
+-    }
+-
+-    _supabase = createClient(supabaseUrl, supabaseServiceKey);
+-  }
+-
+-  return _supabase;
+-}
++// Migrated from Supabase → Vercel Postgres (Neon)
++// Re-export sql from @vercel/postgres for use across the app
++export { sql } from "@vercel/postgres";
+-- 
+2.43.0
+
