@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
+// Fallback password if env var not set (for emergency access)
+const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD || "Arsanka01";
+
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
@@ -7,7 +10,7 @@ export function middleware(request: NextRequest) {
   if (pathname.startsWith("/dashboard") && pathname !== "/dashboard/login") {
     const authCookie = request.cookies.get("dashboard_auth");
 
-    if (authCookie?.value !== process.env.DASHBOARD_PASSWORD) {
+    if (authCookie?.value !== DASHBOARD_PASSWORD) {
       const loginUrl = new URL("/dashboard/login", request.url);
       return NextResponse.redirect(loginUrl);
     }
