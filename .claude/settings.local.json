@@ -5,7 +5,11 @@
       "Bash(npm run build)",
       "Bash(curl -s -X POST https://questionnaire-app-ashy.vercel.app/api/submit -H \"Content-Type: application/json\" -d '{\"\"test\"\": true}')",
       "Bash(vercel env ls questionnaire-app --scope ardi-muluks-projects)",
-      "Bash(curl -s https://questionnaire-app-ashy.vercel.app/api/dashboard)"
+      "Bash(curl -s https://questionnaire-app-ashy.vercel.app/api/dashboard)",
+      "Bash(curl -sI https://questionnaire-app-ashy.vercel.app/dashboard)",
+      "Bash(curl -s -X POST https://questionnaire-app-ashy.vercel.app/api/dashboard/login -H \"Content-Type: application/json\" -d '{\"\"password\"\": \"\"Arsanka01\"\"}' -c /tmp/cookies.txt)",
+      "Bash(curl -s https://questionnaire-app-ashy.vercel.app/api/dashboard -b /tmp/cookies.txt)",
+      "Bash(npx tsc --noEmit)"
     ]
   }
 }
