@@ -14,7 +14,7 @@ export const demographicsSchema = z.object({
   provinsiDetail: z.string().optional().default(""),   // auto-filled from hospital
   namaRS: z.string().optional().default(""),
   hospitalId: z.coerce.number().optional(),
-  wilayah: requiredField,
+  wilayah: z.string().optional().default(""),   // auto-derived from hospital.provinsi
   profesi: requiredField,
   pengalaman: requiredField,
 });

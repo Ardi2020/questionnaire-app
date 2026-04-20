@@ -58,8 +58,6 @@ export function StepDemographics({
     }
   };
 
-  const wilayahAutoFilled = values.wilayah && values.hospitalId;
-
   return (
     <div className="space-y-6">
       <div>
@@ -76,7 +74,7 @@ export function StepDemographics({
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-6">
-          {/* 1. Jenis RS only (kelas & provinsi removed — derived from hospital selection) */}
+          {/* 1. Jenis RS only (kelas, provinsi & wilayah removed — all derived from hospital DB) */}
           {BASIC_FIELDS.map((field) => {
             const demo = DEMOGRAPHICS[field];
             return (
@@ -100,30 +98,9 @@ export function StepDemographics({
             error={errors.namaRS}
           />
 
-          {/* 3. Wilayah — auto-filled when hospital selected, manual otherwise */}
-          {wilayahAutoFilled ? (
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-foreground">
-                {DEMOGRAPHICS.wilayah.label}
-              </label>
-              <div className="rounded-lg border border-primary/30 bg-primary/5 px-4 py-3 text-sm text-primary font-medium">
-                {values.wilayah}
-                <span className="text-xs text-muted-foreground font-normal ml-2">
-                  (otomatis berdasarkan RS dipilih)
-                </span>
-              </div>
-            </div>
-          ) : (
-            <DemographicField
-              label={DEMOGRAPHICS.wilayah.label}
-              options={DEMOGRAPHICS.wilayah.options}
-              value={values.wilayah as string | undefined}
-              onChange={(v) => onChange("wilayah", v)}
-              error={errors.wilayah}
-            />
-          )}
+          {/* Wilayah/Pulau hidden — auto-derived from hospital.provinsi, stored silently */}
 
-          {/* 4-5. Profesi & Pengalaman */}
+          {/* 3-4. Profesi & Pengalaman */}
           {POST_RS_FIELDS.map((field) => {
             const demo = DEMOGRAPHICS[field];
             return (
