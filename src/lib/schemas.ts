@@ -10,8 +10,8 @@ const likertValue = z.coerce
 
 export const demographicsSchema = z.object({
   jenisRS: requiredField,
-  kelasRS: requiredField,
-  provinsiDetail: requiredField,
+  kelasRS: z.string().optional().default(""),          // auto-filled from hospital
+  provinsiDetail: z.string().optional().default(""),   // auto-filled from hospital
   namaRS: z.string().optional().default(""),
   hospitalId: z.coerce.number().optional(),
   wilayah: requiredField,
@@ -79,15 +79,15 @@ export const fullSurveySchema = demographicsSchema
 
 // Schema for each wizard step (index matches step number - 1 for demographics, step 2-8 for likert)
 export const stepSchemas = [
-  null, // Step 0: Welcome (no validation)
+  null,               // Step 0: Welcome (no validation)
   demographicsSchema, // Step 1
-  tiSchema, // Step 2
-  osSchema, // Step 3
-  dcSchema, // Step 4
-  peouSchema, // Step 5
-  puSchema, // Step 6
-  biSchema, // Step 7
-  readSchema, // Step 8
-  null, // Step 9: Review
-  null, // Step 10: Thank you
+  tiSchema,           // Step 2
+  osSchema,           // Step 3
+  dcSchema,           // Step 4
+  peouSchema,         // Step 5
+  puSchema,           // Step 6
+  biSchema,           // Step 7
+  readSchema,         // Step 8
+  null,               // Step 9: Review
+  null,               // Step 10: Thank you
 ];
