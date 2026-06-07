@@ -120,5 +120,26 @@ export function resolveHospitalId(
     }
   }
   if (bestId !== null && best >= minScore && best > secondBest) return bestId;
+
+  // 3) Containment fallback: all typed tokens appear in exactly ONE hospital.
+  // Handles official names with extra words respondents omit, e.g.
+  // "RS Radjiman Wediodiningrat" → "RS Jiwa Dr. Radjiman Wediodiningrat Lawang".
+  // Requires >=2 typed tokens + a unique superset to stay safe.
+  if (tokens.size >= 2) {
+    let containId: number | null = null;
+    let containCount = 0;
+    for (const e of index.entries) {
+      let allIn = true;
+      for (const t of tokens) {
+        if (!e.tokens.has(t)) { allIn = false; break; }
+      }
+      if (allIn) {
+        containCount++;
+        containId = e.id;
+        if (containCount > 1) break;
+      }
+    }
+    if (containCount === 1) return containId;
+  }
   return null;
 }
