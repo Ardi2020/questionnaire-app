@@ -29,9 +29,14 @@ const ALIASES: [RegExp, string][] = [
 ];
 
 // Generic words that carry no identifying signal for an Indonesian hospital.
+// NOTE: facility-type prefixes (rs/rsu/rsud/rsup/rsia/...) are dropped because
+// respondents write them inconsistently (e.g. "RS X" for an official "RSUD X").
+// But identifying qualifiers like "islam" are KEPT as tokens so distinct
+// hospitals that share a city are not conflated — e.g. "RSUP Surabaya"
+// ({surabaya}) must stay separate from "RS Islam Surabaya" ({islam, surabaya}).
 const STOPWORDS = new Set([
-  "rs", "rsu", "rsud", "rsup", "rsia", "rsk", "rsj", "rsi", "rsud",
-  "rumah", "sakit", "umum", "daerah", "pusat", "khusus",
+  "rs", "rsu", "rsud", "rsup", "rsia", "rsk", "rsj", "rsi",
+  "rumah", "sakit", "umum", "daerah", "pusat",
   "kota", "kab", "kabupaten", "provinsi", "prov",
   "dr", "drs", "prof", "h", "hj", "tk", "the", "dan", "of",
 ]);
