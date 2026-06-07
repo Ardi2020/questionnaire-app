@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/supabase";
 import { getWilayahFromProvinsi } from "@/lib/hospitals";
+import { buildHospitalIndex, resolveHospitalId } from "@/lib/hospital-match";
 
 export const dynamic = "force-dynamic";
 
@@ -57,6 +58,29 @@ export async function GET(request: NextRequest) {
     const total = allResponses.length;
     const lastSubmission = total > 0 ? allResponses[0].submitted_at : null;
 
+    // Resolve each response to an *effective* hospital. Many responses are
+    // submitted via the survey's free-text "RS saya tidak ada di daftar"
+    // option, leaving hospital_id NULL even when the typed nama_rs IS one of
+    // the active sampling-frame hospitals. Match those by name so they show
+    // up in "Status per Rumah Sakit" instead of "Responden dari RS Lainnya".
+    const activeHospitalById = new Map<number, Row>(
+      activeHospitals.map((h) => [h.id, h])
+    );
+    const hospIndex = buildHospitalIndex(
+      activeHospitals.map((h) => ({ id: h.id, nama_rs: h.nama_rs }))
+    );
+    allResponses.forEach((r) => {
+      const linked =
+        r.hospital_id && activeHospitalById.has(r.hospital_id)
+          ? r.hospital_id
+          : null;
+      r._effHospitalId = linked ?? resolveHospitalId(r.nama_rs, hospIndex);
+      // effective province: prefer respondent value, else the matched hospital's
+      const effHosp =
+        r._effHospitalId != null ? activeHospitalById.get(r._effHospitalId) : null;
+      r._effProvinsi = r.provinsi || effHosp?.provinsi || null;
+    });
+
     const strataTargets = [
       { strata: "Publik_A",  label: "RS Publik Kelas A",     target: 30 },
       { strata: "Publik_B",  label: "RS Publik Kelas B",     target: 75 },
@@ -83,7 +107,7 @@ export async function GET(request: NextRequest) {
     });
     const provCounts: Record<string, number> = {};
     allResponses.forEach((r) => {
-      if (r.provinsi) provCounts[r.provinsi] = (provCounts[r.provinsi] || 0) + 1;
+      if (r._effProvinsi) provCounts[r._effProvinsi] = (provCounts[r._effProvinsi] || 0) + 1;
     });
 
     const provinsiOrder = [
@@ -105,7 +129,7 @@ export async function GET(request: NextRequest) {
       };
     }).sort((a, b) => b.current - a.current);
     const otherCount = allResponses.filter(
-      (r) => r.provinsi && !allProvinces.includes(r.provinsi)
+      (r) => r._effProvinsi && !allProvinces.includes(r._effProvinsi)
     ).length;
     if (otherCount > 0)
       provinsiStats.push({ provinsi: "Lainnya", current: otherCount, targetRS: 0, targetResp: 0, percentage: 0 });
@@ -120,10 +144,12 @@ export async function GET(request: NextRequest) {
       percentage: total > 0 ? Math.round((count / total) * 100) : 0,
     }));
 
-    // Hospital stats — from DB, supports all 200 hospitals
+    // Hospital stats — from DB, supports all 200 hospitals.
+    // Uses the *effective* hospital id so free-text responses that match an
+    // active hospital by name are counted here too.
     const hospitalCounts: Record<number, number> = {};
     allResponses.forEach((r) => {
-      if (r.hospital_id) hospitalCounts[r.hospital_id] = (hospitalCounts[r.hospital_id] || 0) + 1;
+      if (r._effHospitalId) hospitalCounts[r._effHospitalId] = (hospitalCounts[r._effHospitalId] || 0) + 1;
     });
     const hospitalStats = activeHospitals.map((h) => {
       const current = hospitalCounts[h.id] || 0;
@@ -146,12 +172,14 @@ export async function GET(request: NextRequest) {
       };
     });
 
+    // Only responses that could NOT be matched to an active hospital (by id or
+    // by name) land here as genuine "RS Lainnya".
     const nonTargetMap: Record<string, { nama: string; provinsi: string; count: number }> = {};
     allResponses.forEach((r) => {
-      if (!r.hospital_id && r.nama_rs) {
+      if (!r._effHospitalId && r.nama_rs) {
         const key = r.nama_rs.trim().toLowerCase();
         if (!nonTargetMap[key])
-          nonTargetMap[key] = { nama: r.nama_rs.trim(), provinsi: r.provinsi || "Tidak diketahui", count: 0 };
+          nonTargetMap[key] = { nama: r.nama_rs.trim(), provinsi: r._effProvinsi || "Tidak diketahui", count: 0 };
         nonTargetMap[key].count += 1;
       }
     });
