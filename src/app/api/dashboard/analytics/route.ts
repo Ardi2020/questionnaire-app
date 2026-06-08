@@ -87,6 +87,38 @@ function cronbachAlpha(itemData: number[][]): number {
   return (k / (k - 1)) * (1 - sumItemVariances / totalVariance);
 }
 
+// Invert a square matrix via Gauss-Jordan with partial pivoting.
+// Returns null if (near-)singular.
+function invertMatrix(m: number[][]): number[][] | null {
+  const n = m.length;
+  const a = m.map((row, i) => [
+    ...row,
+    ...Array.from({ length: n }, (_, j) => (i === j ? 1 : 0)),
+  ]);
+  for (let col = 0; col < n; col++) {
+    let pivot = col;
+    for (let r = col + 1; r < n; r++) {
+      if (Math.abs(a[r][col]) > Math.abs(a[pivot][col])) pivot = r;
+    }
+    if (Math.abs(a[pivot][col]) < 1e-10) return null; // singular
+    [a[col], a[pivot]] = [a[pivot], a[col]];
+    const d = a[col][col];
+    for (let j = 0; j < 2 * n; j++) a[col][j] /= d;
+    for (let r = 0; r < n; r++) {
+      if (r === col) continue;
+      const f = a[r][col];
+      for (let j = 0; j < 2 * n; j++) a[r][j] -= f * a[col][j];
+    }
+  }
+  return a.map((row) => row.slice(n));
+}
+
+// Mahalanobis multivariate outlier screening parameters.
+// df = 7 construct composite scores; threshold = χ²(df=7, p=0.001) (Kline 2016;
+// Tabachnick & Fidell). Cases with D² above this are multivariate outliers.
+const CHI2_CRIT_DF7_P001 = 24.3219;
+const MAHALANOBIS_MIN_N = 50; // covariance unstable below this; skip + warn
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ResponseRow = Record<string, any>;
 
@@ -402,6 +434,100 @@ export async function GET(request: NextRequest) {
       }
     });
 
+    // ==========================================
+    // 5. MULTIVARIATE OUTLIERS — MAHALANOBIS D²
+    // ==========================================
+    // Stricter, statistical screening for SEM-PLS: flags respondents whose
+    // profile across the 7 construct composites is jointly extreme.
+    const constructCodes = Object.keys(CONSTRUCTS);
+    const p = constructCodes.length; // 7
+    interface MahalDetail {
+      id: string;
+      d2: number;
+      nama_rs: string;
+      strata: string;
+      profesi: string;
+      hospital_id: number | null;
+    }
+    let mahalanobis: {
+      available: boolean;
+      count: number;
+      percentage: number;
+      threshold: number;
+      df: number;
+      note: string;
+      details: MahalDetail[];
+    } = {
+      available: false,
+      count: 0,
+      percentage: 0,
+      threshold: CHI2_CRIT_DF7_P001,
+      df: p,
+      note: "",
+      details: [],
+    };
+
+    if (n < MAHALANOBIS_MIN_N) {
+      mahalanobis.note = `n=${n} terlalu kecil untuk Mahalanobis yang andal (butuh ≥ ${MAHALANOBIS_MIN_N}).`;
+    } else {
+      // Per-respondent vector of 7 construct composite scores
+      const vectors = rows.map((r) =>
+        constructCodes.map((code) =>
+          mean(CONSTRUCTS[code].items.map((it) => Number(r[it]) || 0)),
+        ),
+      );
+      const muVec = Array.from({ length: p }, (_, j) =>
+        mean(vectors.map((v) => v[j])),
+      );
+      // Covariance matrix (sample, n-1)
+      const cov = Array.from({ length: p }, () => new Array(p).fill(0));
+      for (let j = 0; j < p; j++) {
+        for (let k = j; k < p; k++) {
+          let s = 0;
+          for (const v of vectors) s += (v[j] - muVec[j]) * (v[k] - muVec[k]);
+          const c = s / (n - 1);
+          cov[j][k] = c;
+          cov[k][j] = c;
+        }
+      }
+      const inv = invertMatrix(cov);
+      if (!inv) {
+        mahalanobis.note = "Matriks kovarians singular — D² tidak dapat dihitung.";
+      } else {
+        const details: MahalDetail[] = [];
+        vectors.forEach((v, i) => {
+          const diff = v.map((x, j) => x - muVec[j]);
+          let d2 = 0;
+          for (let j = 0; j < p; j++) {
+            let tmp = 0;
+            for (let k = 0; k < p; k++) tmp += diff[k] * inv[k][j];
+            d2 += tmp * diff[j];
+          }
+          if (d2 > CHI2_CRIT_DF7_P001) {
+            const r = rows[i];
+            details.push({
+              id: r.id,
+              d2: Math.round(d2 * 100) / 100,
+              nama_rs: r.nama_rs || "RS tidak diketahui",
+              strata: computeStrata(r.jenis_rs, r.kelas_rs),
+              profesi: r.profesi || "-",
+              hospital_id: r.hospital_id,
+            });
+          }
+        });
+        details.sort((a, b) => b.d2 - a.d2);
+        mahalanobis = {
+          available: true,
+          count: details.length,
+          percentage: Math.round((details.length / n) * 10000) / 100,
+          threshold: CHI2_CRIT_DF7_P001,
+          df: p,
+          note: "",
+          details,
+        };
+      }
+    }
+
     return NextResponse.json({
       n,
       excludedCount,
@@ -409,6 +535,7 @@ export async function GET(request: NextRequest) {
       adequacy,
       constructs: constructStats,
       items: itemStats,
+      mahalanobis,
       missingData: {
         totalMissing: Object.values(missingByItem).reduce((a, b) => a + b, 0),
         byItem: missingByItem,

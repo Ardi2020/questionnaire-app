@@ -63,6 +63,25 @@ interface HospitalListItem {
   response_count: number;
 }
 
+interface MahalDetail {
+  id: string;
+  d2: number;
+  nama_rs: string;
+  strata: string;
+  profesi: string;
+  hospital_id: number | null;
+}
+
+interface Mahalanobis {
+  available: boolean;
+  count: number;
+  percentage: number;
+  threshold: number;
+  df: number;
+  note: string;
+  details: MahalDetail[];
+}
+
 interface ExcludedResponse {
   id: string;
   nama_rs: string;
@@ -87,6 +106,7 @@ interface AnalyticsData {
     byType?: { straightlining: number; nearStraightlining: number; extremeScore: number };
     details: OutlierDetail[];
   };
+  mahalanobis?: Mahalanobis;
 }
 
 function Badge({ ok, label }: { ok: boolean; label: string }) {
@@ -247,7 +267,7 @@ export function AnalyticsPanel() {
     return <p className="text-sm text-gray-400 py-8 text-center">Belum ada data untuk dianalisis.</p>;
   }
 
-  const { adequacy, constructs, items, missingData, outliers, hospitalList, excludedCount } = data;
+  const { adequacy, constructs, items, missingData, outliers, hospitalList, excludedCount, mahalanobis } = data;
 
   // Group items by construct
   const constructItems: Record<string, ItemStat[]> = {};
@@ -562,6 +582,67 @@ export function AnalyticsPanel() {
           )}
         </div>
       </div>
+
+      {/* ===== MULTIVARIATE OUTLIERS (MAHALANOBIS D²) ===== */}
+      {mahalanobis && (
+        <div className="bg-white rounded-xl border border-gray-200 p-6">
+          <div className="flex items-baseline justify-between mb-1 flex-wrap gap-2">
+            <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide">
+              Outlier Multivariat — Mahalanobis D²
+            </h2>
+            <span className="text-[11px] text-gray-400">
+              Ambang: χ²(df={mahalanobis.df}, p&lt;.001) = {mahalanobis.threshold.toFixed(2)}
+            </span>
+          </div>
+          <p className="text-xs text-gray-400 mb-4">
+            Outlier statistik berdasarkan profil 7 skor komposit konstruk (Kline 2016; Tabachnick &amp; Fidell). Lebih ketat dari deteksi straightlining.
+          </p>
+
+          {!mahalanobis.available ? (
+            <div className="rounded-lg bg-gray-50 border border-gray-200 p-4">
+              <p className="text-sm text-gray-500">{mahalanobis.note || "Tidak tersedia."}</p>
+            </div>
+          ) : mahalanobis.count === 0 ? (
+            <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-4">
+              <p className="text-sm text-emerald-700 font-medium">✓ Tidak ada outlier multivariat (D² &gt; {mahalanobis.threshold.toFixed(2)})</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="rounded-lg bg-orange-50 border border-orange-200 p-3">
+                <p className="text-sm text-orange-700 font-medium">
+                  ⚠ {mahalanobis.count} dari {data.n} responden = outlier multivariat ({mahalanobis.percentage.toFixed(2)}%)
+                </p>
+              </div>
+              <div className="max-h-64 overflow-y-auto space-y-1.5">
+                {mahalanobis.details.map((o) => (
+                  <div key={o.id} className="flex items-center gap-2 text-xs p-2.5 bg-gray-50 rounded border border-gray-100 flex-wrap">
+                    <span className="shrink-0 px-1.5 py-0.5 rounded font-medium bg-orange-100 text-orange-700 font-mono">
+                      D² = {o.d2.toFixed(2)}
+                    </span>
+                    <span className="text-gray-700 font-medium truncate max-w-[200px]" title={o.nama_rs}>
+                      {o.nama_rs || "RS tidak diketahui"}
+                    </span>
+                    <span className="text-gray-400 shrink-0">({o.strata})</span>
+                    <span className="text-gray-300">|</span>
+                    <span className="text-gray-500 shrink-0">{o.profesi || "-"}</span>
+                    <span className="ml-auto" />
+                    <button
+                      onClick={() => handleExclude(o.id, `multivariate-outlier: Mahalanobis D²=${o.d2.toFixed(2)}`)}
+                      disabled={excluding === o.id}
+                      className="shrink-0 px-2.5 py-1 bg-red-50 text-red-600 rounded hover:bg-red-100 transition-colors font-medium disabled:opacity-50"
+                    >
+                      {excluding === o.id ? "..." : "Exclude"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-gray-400">
+                D² mengikuti distribusi χ² dengan df={mahalanobis.df}. Responden dengan D² di atas ambang dianggap ekstrem secara multivariat — pertimbangkan untuk di-exclude.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ===== EXCLUDED RESPONSES PANEL ===== */}
       <div className="bg-white rounded-xl border border-gray-200 p-5">
