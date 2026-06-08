@@ -81,7 +81,12 @@ interface AnalyticsData {
   constructs: ConstructStat[];
   items: ItemStat[];
   missingData: { totalMissing: number; byItem: Record<string, number> };
-  outliers: { count: number; percentage: number; details: OutlierDetail[] };
+  outliers: {
+    count: number;
+    percentage: number;
+    byType?: { straightlining: number; nearStraightlining: number; extremeScore: number };
+    details: OutlierDetail[];
+  };
 }
 
 function Badge({ ok, label }: { ok: boolean; label: string }) {
@@ -501,8 +506,13 @@ export function AnalyticsPanel() {
             <div className="space-y-3">
               <div className="rounded-lg bg-amber-50 border border-amber-200 p-3">
                 <p className="text-sm text-amber-700 font-medium">
-                  ⚠ {outliers.count} responden terindikasi outlier ({outliers.percentage}%)
+                  ⚠ {outliers.count} dari {data.n} responden terindikasi outlier ({outliers.percentage.toFixed(2)}%)
                 </p>
+                {outliers.byType && (
+                  <p className="text-xs text-amber-600 mt-1">
+                    Straightlining: {outliers.byType.straightlining} · Near-straightlining: {outliers.byType.nearStraightlining} · Skor ekstrem (&gt;3σ): {outliers.byType.extremeScore}
+                  </p>
+                )}
               </div>
               <div className="max-h-64 overflow-y-auto space-y-1.5">
                 {outliers.details.map((o) => (

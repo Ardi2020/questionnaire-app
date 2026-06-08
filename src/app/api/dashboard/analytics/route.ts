@@ -415,7 +415,13 @@ export async function GET(request: NextRequest) {
       },
       outliers: {
         count: outliers.length,
-        percentage: n > 0 ? Math.round((outliers.length / n) * 100 * 10) / 10 : 0,
+        // 2-decimal precision so a real ~3% rate isn't displayed as a flat "3%"
+        percentage: n > 0 ? Math.round((outliers.length / n) * 10000) / 100 : 0,
+        byType: {
+          straightlining: outliers.filter((o) => o.type === "straightlining").length,
+          nearStraightlining: outliers.filter((o) => o.type === "near-straightlining").length,
+          extremeScore: outliers.filter((o) => o.type === "extreme-score").length,
+        },
         details: outliers,
       },
     });
