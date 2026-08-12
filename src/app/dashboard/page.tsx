@@ -139,6 +139,22 @@ export default function DashboardPage() {
     }
   };
 
+  const handleExportAnonymous = async () => {
+    try {
+      const res = await fetch("/api/dashboard/export?anonymous=true");
+      if (!res.ok) throw new Error("Gagal export");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `responses_anonim_${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert("Gagal mengunduh CSV anonim");
+    }
+  };
+
   const handleReset = async (exportFirst: boolean) => {
     setResetting(true);
     try {
@@ -224,6 +240,13 @@ export default function DashboardPage() {
                 className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 px-3 py-2 text-xs font-medium text-white hover:bg-gray-800 transition-colors"
               >
                 ↓ Export CSV
+              </button>
+              <button
+                onClick={handleExportAnonymous}
+                title="Tanpa nama rumah sakit — provinsi, publik/swasta, kelas RS, dan seluruh jawaban tetap ada"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+              >
+                ↓ Export CSV (Anonim)
               </button>
               <button
                 onClick={() => setShowResetModal(true)}

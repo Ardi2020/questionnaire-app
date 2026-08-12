@@ -13,6 +13,7 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const includeExcluded = searchParams.get("include_excluded") === "true";
+    const anonymous = searchParams.get("anonymous") === "true";
 
     const sql = getDb();
 
@@ -44,15 +45,33 @@ export async function GET(request: NextRequest) {
       return new NextResponse("Belum ada data responden.", { status: 200, headers: { "Content-Type": "text/plain" } });
     }
 
-    const columns = [
-      "id","submitted_at","jenis_rs","kelas_rs","provinsi","nama_rs","hospital_id","no_urut_rs",
-      "wilayah","profesi","pengalaman",
-      "ti1","ti2","ti3","ti4","os1","os2","os3","os4",
-      "dc1","dc2","dc3","dc4","peou1","peou2","peou3","peou4",
-      "pu1","pu2","pu3","pu4","bi1","bi2","bi3",
-      "read1","read2","read3","read4","read_g1",
-      "excluded","excluded_reason","excluded_at",
-    ];
+    // Anonymous mode drops every column that can identify the specific
+    // hospital a response came from — nama_rs (name), hospital_id and
+    // no_urut_rs (both reversible to a name via the target-hospital list),
+    // and excluded_reason (free text, kept out of external-facing exports
+    // as a precaution even though current values don't name a hospital).
+    // Analytical fields that don't identify the hospital (provinsi,
+    // jenis_rs/kelas_rs = publik-swasta + kelas, wilayah, profesi,
+    // pengalaman, and every Likert item) are all kept.
+    const columns = anonymous
+      ? [
+          "id","submitted_at","jenis_rs","kelas_rs","provinsi",
+          "wilayah","profesi","pengalaman",
+          "ti1","ti2","ti3","ti4","os1","os2","os3","os4",
+          "dc1","dc2","dc3","dc4","peou1","peou2","peou3","peou4",
+          "pu1","pu2","pu3","pu4","bi1","bi2","bi3",
+          "read1","read2","read3","read4","read_g1",
+          "excluded","excluded_at",
+        ]
+      : [
+          "id","submitted_at","jenis_rs","kelas_rs","provinsi","nama_rs","hospital_id","no_urut_rs",
+          "wilayah","profesi","pengalaman",
+          "ti1","ti2","ti3","ti4","os1","os2","os3","os4",
+          "dc1","dc2","dc3","dc4","peou1","peou2","peou3","peou4",
+          "pu1","pu2","pu3","pu4","bi1","bi2","bi3",
+          "read1","read2","read3","read4","read_g1",
+          "excluded","excluded_reason","excluded_at",
+        ];
 
     const header = columns.join(",");
     const rows = responses.map((r) =>
@@ -65,11 +84,12 @@ export async function GET(request: NextRequest) {
       }).join(",")
     );
 
+    const fnamePrefix = anonymous ? "responses_anonim" : "responses";
     return new NextResponse([header, ...rows].join("\n"), {
       status: 200,
       headers: {
         "Content-Type": "text/csv; charset=utf-8",
-        "Content-Disposition": `attachment; filename="responses_${new Date().toISOString().slice(0, 10)}.csv"`,
+        "Content-Disposition": `attachment; filename="${fnamePrefix}_${new Date().toISOString().slice(0, 10)}.csv"`,
       },
     });
   } catch (err) {
