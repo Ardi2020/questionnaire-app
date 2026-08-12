@@ -16,16 +16,27 @@ export async function GET(request: NextRequest) {
 
     const sql = getDb();
 
+    // LEFT JOIN hospitals so each row also carries the hospital's official
+    // "No. Urut" (1-163, matches the target-hospital reference list) instead
+    // of only the internal DB primary key (which can be any number due to
+    // the SERIAL sequence — deactivated/re-added hospitals leave gaps).
+    // LEFT JOIN keeps rows whose hospital_id is NULL or points at a hospital
+    // outside the current active list (no_urut_rs comes back empty for those).
     let responses;
     if (includeExcluded) {
-      // Export ALL rows including excluded
-      responses = await sql`SELECT * FROM responses ORDER BY submitted_at ASC`;
-    } else {
-      // Export only non-excluded rows
       responses = await sql`
-        SELECT * FROM responses
-        WHERE (excluded = false OR excluded IS NULL)
-        ORDER BY submitted_at ASC
+        SELECT r.*, h.no_urut AS no_urut_rs
+        FROM responses r
+        LEFT JOIN hospitals h ON h.id = r.hospital_id
+        ORDER BY r.submitted_at ASC
+      `;
+    } else {
+      responses = await sql`
+        SELECT r.*, h.no_urut AS no_urut_rs
+        FROM responses r
+        LEFT JOIN hospitals h ON h.id = r.hospital_id
+        WHERE (r.excluded = false OR r.excluded IS NULL)
+        ORDER BY r.submitted_at ASC
       `;
     }
 
@@ -34,7 +45,7 @@ export async function GET(request: NextRequest) {
     }
 
     const columns = [
-      "id","submitted_at","jenis_rs","kelas_rs","provinsi","nama_rs","hospital_id",
+      "id","submitted_at","jenis_rs","kelas_rs","provinsi","nama_rs","hospital_id","no_urut_rs",
       "wilayah","profesi","pengalaman",
       "ti1","ti2","ti3","ti4","os1","os2","os3","os4",
       "dc1","dc2","dc3","dc4","peou1","peou2","peou3","peou4",
